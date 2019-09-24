@@ -15,7 +15,6 @@ type errTracker struct {
 	events map[int64]uint32
 	window int64
 	pipe   chan struct{}
-	clock  *time.Ticker
 	sz     *uint32
 }
 
@@ -25,7 +24,6 @@ func newErrTracker(dur time.Duration) errTracker {
 	e.events = make(map[int64]uint32)
 	e.window = int64(dur)
 	e.pipe = make(chan struct{})
-	e.clock = time.NewTicker(evictInterval)
 	var sz uint32
 	e.sz = &sz
 
@@ -36,10 +34,12 @@ func newErrTracker(dur time.Duration) errTracker {
 
 func (e errTracker) poll() {
 	go func(e *errTracker) {
+		t := time.NewTicker(evictInterval)
+		window := e.window
 		for {
 			select {
-			case <-e.clock.C:
-				e.evict()
+			case <-t.C:
+				e.evict(window)
 			case <-e.pipe:
 				e.record()
 			}
@@ -61,10 +61,9 @@ func (e errTracker) record() {
 	e.mx.Unlock()
 }
 
-func (e errTracker) evict() {
-	// bail if there are no events to track
-	ml := len(e.events)
-	if ml == 0 {
+func (e errTracker) evict(window int64) {
+	sz := atomic.LoadUint32(e.sz)
+	if sz == 0 {
 		return
 	}
 
@@ -72,8 +71,8 @@ func (e errTracker) evict() {
 	defer e.mx.Unlock()
 
 	// make a slice of entries to be evicted
-	evictions := make([]int64, 0, ml)
-	evictTime := time.Now().UnixNano() - e.window
+	evictions := make([]int64, 0, sz)
+	evictTime := time.Now().UnixNano() - window
 	var diff uint32
 	for k, v := range e.events {
 		if k < evictTime {
@@ -85,14 +84,13 @@ func (e errTracker) evict() {
 	if len(evictions) == 0 {
 		return
 	}
+	dumpf("\nevicting %d errors", len(evictions))
 
 	// remove the evicted timestamps
 	for i := range evictions {
 		delete(e.events, evictions[i])
 	}
 
-	// set error size
-	sz := atomic.LoadUint32(e.sz)
 	// casting these larger to avoid loss of resolution
 	newSz := int64(sz) - int64(diff)
 	if newSz < 0 {
@@ -103,4 +101,20 @@ func (e errTracker) evict() {
 
 func (e errTracker) size() uint32 {
 	return atomic.LoadUint32(e.sz)
+}
+
+func (e errTracker) reset(do bool) {
+	if !do {
+		return
+	}
+	e.mx.Lock()
+	keys := make([]int64, 0, len(e.events))
+	for k := range e.events {
+		keys = append(keys, k)
+	}
+	for i := range keys {
+		delete(e.events, keys[i])
+	}
+	e.mx.Unlock()
+	atomic.StoreUint32(e.sz, 0)
 }

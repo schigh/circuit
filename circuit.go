@@ -9,7 +9,7 @@ const (
 	DefaultWindow    = 10 * time.Minute
 	DefaultThreshold = uint32(5)
 
-	minimumWindow    = 10 * time.Second
+	minimumWindow    = 5 * time.Second
 	minimumBackoff   = time.Second
 	minimumThreshold = uint32(1)
 )

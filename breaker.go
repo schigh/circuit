@@ -58,6 +58,11 @@ type BreakerOptions struct {
 	// new errors are recorded.
 	LockOut time.Duration
 
+	// OpeningWillResetErrors will cause the error count to reset
+	// when the circuit breaker opens.  If this is set true, all
+	// blocked calls will come from the throttled backoff
+	OpeningWillResetErrors bool
+
 	// IgnoreContext will prevent context cancellation to
 	// propagate to any in-flight Run functions
 	IgnoreContext bool
@@ -80,6 +85,7 @@ type Breaker struct {
 	state           uint32            // Current state
 	lockCreated     int64             // Unix nano timestamp of lock creation time
 	lockCancel      []chan struct{}   // Signaling channel to stop lock timer
+	openingResets   bool              // If true, the circuit breaker resets its error count upon opening
 	throttleCreated int64             // Unix nano timestamp of throttle creation time
 	throttleChance  uint32            // Chance of a request being throttled during backoff
 	throttleCancel  []chan struct{}   // Signaling channels to stop throttle backoff
@@ -101,15 +107,17 @@ type Breaker struct {
 // fail immediately.
 func NewBreaker(opts BreakerOptions) *Breaker {
 	b := &Breaker{
-		name:        opts.Name,
-		timeout:     opts.Timeout,
-		baudrate:    opts.BaudRate,
-		backoff:     opts.BackOff,
-		window:      opts.Window,
-		threshold:   opts.Threshold,
-		lockout:     opts.LockOut,
-		interpolate: opts.InterpolationFunc,
+		name:          opts.Name,
+		timeout:       opts.Timeout,
+		baudrate:      opts.BaudRate,
+		backoff:       opts.BackOff,
+		window:        opts.Window,
+		threshold:     opts.Threshold,
+		lockout:       opts.LockOut,
+		interpolate:   opts.InterpolationFunc,
+		openingResets: opts.OpeningWillResetErrors,
 	}
+	// if there is no name, just make a signature from the caller
 	if b.name == "" {
 		function, file, line, _ := runtime.Caller(1)
 		b.name = strings.ReplaceAll(
@@ -148,7 +156,7 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		b.threshold = minimumThreshold
 	}
 	if b.interpolate == nil {
-		b.interpolate = Linear
+		b.interpolate = Exponential
 	}
 
 	nowNano := time.Now().UnixNano()
@@ -179,6 +187,7 @@ func (b *Breaker) lockStatus() (time.Time, bool) {
 
 // make lock
 func (b *Breaker) setLocked(is bool) {
+	b.tracker.reset(is && b.openingResets)
 	if b.lockout == 0 {
 		return
 	}
@@ -202,7 +211,6 @@ func (b *Breaker) setLocked(is bool) {
 	atomic.SwapInt64(&b.lockCreated, nowNano)
 	cancel := make(chan struct{}, 1)
 	b.lockCancel = append(b.lockCancel, cancel)
-
 	dumpf("\nlocking out for %v", b.lockout)
 	go func(b *Breaker, lockID int64, cancel chan struct{}) {
 		t := time.NewTimer(b.lockout)
@@ -304,10 +312,21 @@ func (b *Breaker) changeStateTo(to uint32) {
 	//    - Closed to Open
 	//    - Open to Throttled
 	//    - Throttled to Open
+	//    - Throttled to Closed
 	from := atomic.SwapUint32(&b.state, to)
 	if from == to {
 		return
 	}
+
+	switch from {
+	case internalOpen:
+		b.setLocked(false)
+	case internalThrottled:
+		b.setThrottled(false)
+	case internalClosed:
+		b.setClosed(false)
+	}
+
 	switch to {
 	case internalOpen:
 		b.setLocked(true)
@@ -315,13 +334,6 @@ func (b *Breaker) changeStateTo(to uint32) {
 		b.setThrottled(true)
 	case internalClosed:
 		b.setClosed(true)
-	}
-
-	switch from {
-	case internalThrottled:
-		b.setThrottled(false)
-	case internalClosed:
-		b.setClosed(false)
 	}
 }
 
