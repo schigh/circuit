@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -41,12 +42,23 @@ func main() {
 
 	b := circuit.NewBreaker(circuit.BreakerOptions{
 		Window:    30 * time.Second,
-		Threshold: 1000,
-		LockOut:   2 * time.Second,
+		Threshold: 3,
+		LockOut:   5 * time.Second,
 		BackOff:   20 * time.Second,
 		//OpeningWillResetErrors: true,
-		InterpolationFunc: circuit.Linear,
+		InterpolationFunc: circuit.EaseInOut,
 	})
+
+	stateChange := b.StateChange()
+	go func() {
+		for {
+			select {
+			case state := <-stateChange:
+				data, _ := json.MarshalIndent(&state, "", "  ")
+				_, _ = fmt.Fprintf(os.Stderr, "\n\n%s\n\n", data)
+			}
+		}
+	}()
 
 	done := uint32(0)
 	start := time.Now()
@@ -117,7 +129,7 @@ func main() {
 		f1, f1, f1, f1, f1, f1, f1, f1, f1, f1,
 		f1, f1, f1, f1, f1, f1, f1, f1, f1, f1,
 		f1, f1, f1, f1, f1, f1, f1, f1, f1, f1,
-		f2, f2, f2, f2, f2, f2, f2, f2, f2, f2,
+		f1, f1, f1, f1, f1, f1, f1, f1, f1, f2,
 	}
 
 	rand.Seed(start.UnixNano())
@@ -130,7 +142,7 @@ func main() {
 			}
 
 			wg := &sync.WaitGroup{}
-			iter := 50 //int(rand.Int31n(5))
+			iter := 10 //int(rand.Int31n(5))
 			wg.Add(iter)
 
 			for i := 0; i < iter; i++ {
@@ -158,8 +170,10 @@ func main() {
 			//	time.Sleep(900 * time.Millisecond)
 			//}
 			wg.Wait()
-			time.Sleep(100 * time.Millisecond)
-			d := time.Duration(tick*100) * time.Millisecond
+			time.Sleep(time.Second)
+			//time.Sleep(100 * time.Millisecond)
+			d := time.Duration(tick) * time.Second
+			//d := time.Duration(tick*100) * time.Millisecond
 			_, _ = fmt.Fprintf(os.Stderr, "\n%v\tstate: %s\terrors: %d\n", d, b.State().String(), b.Size())
 			tick++
 		}
