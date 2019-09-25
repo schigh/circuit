@@ -1,6 +1,7 @@
 package circuit
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -84,7 +85,7 @@ func (e errTracker) evict(window int64) {
 	if len(evictions) == 0 {
 		return
 	}
-	dumpf("\nevicting %d errors", len(evictions))
+	dumpf("\n\n%s", strings.Repeat("🦶", len(evictions)))
 
 	// remove the evicted timestamps
 	for i := range evictions {

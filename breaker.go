@@ -60,7 +60,8 @@ type BreakerOptions struct {
 
 	// OpeningWillResetErrors will cause the error count to reset
 	// when the circuit breaker opens.  If this is set true, all
-	// blocked calls will come from the throttled backoff
+	// blocked calls will come from the throttled backoff, unless
+	// the circuit breaker has a lockout duration
 	OpeningWillResetErrors bool
 
 	// IgnoreContext will prevent context cancellation to
@@ -75,29 +76,37 @@ type BreakerOptions struct {
 
 // Breaker is the circuit breaker implementation for this package
 type Breaker struct {
-	name            string            // Circuit Breaker name
-	timeout         time.Duration     // Timeout for Run func
-	baudrate        time.Duration     // Polling rate to recalculate error counts
-	backoff         time.Duration     // Length of time the breaker is throttled
-	lockout         time.Duration     // Length of time a breaker is locked out once it opens
-	window          time.Duration     // Window of time to look for errors (e.g. 5 errors in 10 mins)
-	threshold       uint32            // Maximum number of errors allowed to occur in window
-	state           uint32            // Current state
-	lockCreated     int64             // Unix nano timestamp of lock creation time
-	lockCancel      []chan struct{}   // Signaling channel to stop lock timer
-	openingResets   bool              // If true, the circuit breaker resets its error count upon opening
-	throttleCreated int64             // Unix nano timestamp of throttle creation time
-	throttleChance  uint32            // Chance of a request being throttled during backoff
-	throttleCancel  []chan struct{}   // Signaling channels to stop throttle backoff
-	closedSince     int64             // Unix nano timestamp of last closed time (or creation)
-	initialized     bool              // Flag to check if the breaker was initialized via NewBreaker
-	ignoreContext   bool              // If true, will not propagate context cancellation
-	stateMX         sync.Mutex        // Mutex around state change
-	calcTicker      *time.Ticker      // Internal ticker for recalculations, controlled by baud rate
-	unlocker        *time.Timer       // Timer for unlocking the circuit breaker when lockout is set
-	tracker         errTracker        // Error tracker
-	interpolate     InterpolationFunc // Function used to interpolate throttling chance
-	rando           *rand.Rand        // Internal randomizer
+	name string // Circuit Breaker name
+
+	// timings
+	timeout  time.Duration // Timeout for Run func
+	baudrate time.Duration // Polling rate to recalculate error counts
+	backoff  time.Duration // Length of time the breaker is throttled
+	lockout  time.Duration // Length of time a breaker is locked out once it opens
+	window   time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
+
+	// state
+	threshold      uint32 // Maximum number of errors allowed to occur in window
+	state          uint32 // Current state
+	throttleChance uint32 // Chance of a request being throttled during backoff
+
+	// event timestamps
+	lockCreated     int64 // Unix nano timestamp of lock creation time
+	throttleCreated int64 // Unix nano timestamp of throttle creation time
+	closedSince     int64 // Unix nano timestamp of last closed time (or creation)
+
+	// switches
+	initialized   bool // Flag to check if the breaker was initialized via NewBreaker
+	ignoreContext bool // If true, will not propagate context cancellation
+	openingResets bool // If true, the circuit breaker resets its error count upon opening
+
+	// misc
+	stateMX     sync.Mutex        // Mutex around state change
+	tracker     errTracker        // Error tracker
+	interpolate InterpolationFunc // Function used to interpolate throttling chance
+
+	throttleCancel []chan struct{} // Signaling channels to stop throttle backoff
+	lockCancel     []chan struct{} // Signaling channel to stop lock timer
 }
 
 // NewBreaker will create a new Breaker using the
@@ -159,15 +168,13 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		b.interpolate = Exponential
 	}
 
-	nowNano := time.Now().UnixNano()
 	b.tracker = newErrTracker(b.window)
-	b.calcTicker = time.NewTicker(b.baudrate)
-	b.closedSince = nowNano
-	b.rando = rand.New(rand.NewSource(nowNano))
+	b.closedSince = time.Now().UnixNano()
 	go func(b *Breaker) {
+		t := time.NewTicker(b.baudrate)
 		for {
 			select {
-			case <-b.calcTicker.C:
+			case <-t.C:
 				b.calc()
 			}
 		}
@@ -187,21 +194,21 @@ func (b *Breaker) lockStatus() (time.Time, bool) {
 
 // make lock
 func (b *Breaker) setLocked(is bool) {
+	// if resetting the counter is enabled, it is done regardless of lockout
 	b.tracker.reset(is && b.openingResets)
+
 	if b.lockout == 0 {
 		return
 	}
 
-	dumpf("\nsetting locked: %t", is)
-	// if there is a current unlock timer, this will clear it.
-	// this is a noop if the lockout is false
-	// if setting false, just swap and exit
-
 	if !is {
 		atomic.SwapInt64(&b.lockCreated, 0)
+		// clean up any running lock timers
 		for i := range b.lockCancel {
 			b.lockCancel[i] <- struct{}{}
 		}
+		// discarding all unlock channels since we
+		// dont need them any more
 		b.lockCancel = []chan struct{}(nil)
 		return
 	}
@@ -209,23 +216,24 @@ func (b *Breaker) setLocked(is bool) {
 	// setting true, start a new unlocker
 	nowNano := time.Now().UnixNano()
 	atomic.SwapInt64(&b.lockCreated, nowNano)
-	cancel := make(chan struct{}, 1)
-	b.lockCancel = append(b.lockCancel, cancel)
-	dumpf("\nlocking out for %v", b.lockout)
+
+	// in case the locker is overridden, this channel
+	// will cause the following goroutine to short circuit
+	unlockChan := make(chan struct{}, 1)
+	b.lockCancel = append(b.lockCancel, unlockChan)
+
 	go func(b *Breaker, lockID int64, cancel chan struct{}) {
 		t := time.NewTimer(b.lockout)
 		select {
 		case <-t.C:
 			// only swap if we are unlocking from our lock
-			if atomic.CompareAndSwapInt64(&b.lockCreated, lockID, 0) {
-				dumps("\nlock released")
-			}
+			atomic.CompareAndSwapInt64(&b.lockCreated, lockID, 0)
 			return
 		case <-cancel:
 			dumps("unlocker canceled")
 			return
 		}
-	}(b, nowNano, cancel)
+	}(b, nowNano, unlockChan)
 }
 
 // get the throttle status
@@ -239,14 +247,16 @@ func (b *Breaker) throttledStatus() (time.Time, bool) {
 
 // make throttled
 func (b *Breaker) setThrottled(is bool) {
-	dumpf("\nsetting throttled: %t", is)
-
 	if !is {
 		atomic.SwapInt64(&b.throttleCreated, 0)
 		atomic.SwapUint32(&b.throttleChance, 0)
+
+		// cancelChan any existing backoff timers
 		for i := range b.throttleCancel {
 			b.throttleCancel[i] <- struct{}{}
 		}
+
+		// discard backoff
 		b.throttleCancel = []chan struct{}(nil)
 		return
 	}
@@ -256,10 +266,9 @@ func (b *Breaker) setThrottled(is bool) {
 	atomic.SwapUint32(&b.throttleChance, 100)
 
 	t := time.NewTicker(b.backoff / 100)
-	cancel := make(chan struct{}, 1)
-	b.throttleCancel = append(b.throttleCancel, cancel)
+	cancelChan := make(chan struct{}, 1)
+	b.throttleCancel = append(b.throttleCancel, cancelChan)
 
-	dumpf("\nthrottling for %v", b.backoff)
 	go func(b *Breaker, t *time.Ticker, cancel chan struct{}) {
 		i := 1
 		for {
@@ -278,11 +287,11 @@ func (b *Breaker) setThrottled(is bool) {
 					return
 				}
 			case <-cancel:
-				dumps("throttle canceled")
+				dumps("\nthrottle canceled")
 				return
 			}
 		}
-	}(b, t, cancel)
+	}(b, t, cancelChan)
 }
 
 // get the closed status
