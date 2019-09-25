@@ -2,7 +2,6 @@ package circuit
 
 import (
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -12,7 +11,6 @@ const (
 )
 
 type errTracker struct {
-	mx     *sync.Mutex
 	events map[int64]uint32
 	window int64
 	pipe   chan struct{}
@@ -21,7 +19,6 @@ type errTracker struct {
 
 func newErrTracker(dur time.Duration) errTracker {
 	e := errTracker{}
-	e.mx = &sync.Mutex{}
 	e.events = make(map[int64]uint32)
 	e.window = int64(dur)
 	e.pipe = make(chan struct{})
@@ -56,10 +53,8 @@ func (e errTracker) incr() {
 // record an error instance
 func (e errTracker) record() {
 	n := time.Now().UnixNano()
-	e.mx.Lock()
 	e.events[n]++
 	atomic.AddUint32(e.sz, 1)
-	e.mx.Unlock()
 }
 
 func (e errTracker) evict(window int64) {
@@ -67,9 +62,6 @@ func (e errTracker) evict(window int64) {
 	if sz == 0 {
 		return
 	}
-
-	e.mx.Lock()
-	defer e.mx.Unlock()
 
 	// make a slice of entries to be evicted
 	evictions := make([]int64, 0, sz)
@@ -82,7 +74,7 @@ func (e errTracker) evict(window int64) {
 		}
 	}
 	// bail if there are no evictions
-	if len(evictions) == 0 {
+	if diff == 0 {
 		return
 	}
 	dumpf("\n\n%s", strings.Repeat("🦶", len(evictions)))
@@ -108,7 +100,6 @@ func (e errTracker) reset(do bool) {
 	if !do {
 		return
 	}
-	e.mx.Lock()
 	keys := make([]int64, 0, len(e.events))
 	for k := range e.events {
 		keys = append(keys, k)
@@ -116,6 +107,5 @@ func (e errTracker) reset(do bool) {
 	for i := range keys {
 		delete(e.events, keys[i])
 	}
-	e.mx.Unlock()
 	atomic.StoreUint32(e.sz, 0)
 }
