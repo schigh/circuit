@@ -430,14 +430,14 @@ func (b *Breaker) Run(ctx context.Context, f func(context.Context) (interface{},
 		err   error
 	}
 
-	rChan := make(chan result, 1)
+	resultChan := make(chan result, 1)
 	timeout := time.NewTimer(b.timeout)
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithCancel(ctx)
 
 	go func(ctx context.Context) {
 		v, e := f(ctx)
-		rChan <- result{
+		resultChan <- result{
 			value: v,
 			err:   e,
 		}
@@ -453,7 +453,7 @@ func (b *Breaker) Run(ctx context.Context, f func(context.Context) (interface{},
 			b.tracker.incr()
 			return nil, TimeoutError
 		// f() has returned values
-		case r := <-rChan:
+		case r := <-resultChan:
 			timeout.Stop()
 			if r.err != nil {
 				if !b.ignoreContext {
