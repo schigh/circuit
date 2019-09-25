@@ -105,8 +105,10 @@ type Breaker struct {
 	tracker     errTracker        // Error tracker
 	interpolate InterpolationFunc // Function used to interpolate throttling chance
 
+	// orchestration
 	throttleCancel []chan struct{} // Signaling channels to stop throttle backoff
 	lockCancel     []chan struct{} // Signaling channel to stop lock timer
+	stateChange    chan BreakerState
 }
 
 // NewBreaker will create a new Breaker using the
@@ -165,11 +167,13 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		b.threshold = minimumThreshold
 	}
 	if b.interpolate == nil {
-		b.interpolate = Exponential
+		b.interpolate = Linear
 	}
 
+	b.stateChange = make(chan BreakerState, 1)
 	b.tracker = newErrTracker(b.window)
-	b.closedSince = time.Now().UnixNano()
+	now := time.Now()
+	b.closedSince = now.UnixNano()
 	go func(b *Breaker) {
 		t := time.NewTicker(b.baudrate)
 		for {
@@ -180,6 +184,13 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		}
 	}(b)
 	b.initialized = true
+
+	b.stateChange <- BreakerState{
+		Name:        b.name,
+		State:       Closed,
+		ClosedSince: &now,
+	}
+
 	return b
 }
 
@@ -327,6 +338,11 @@ func (b *Breaker) changeStateTo(to uint32) {
 		return
 	}
 
+	newState := BreakerState{
+		Name:  b.name,
+		State: State(to),
+	}
+
 	switch from {
 	case internalOpen:
 		b.setLocked(false)
@@ -339,10 +355,34 @@ func (b *Breaker) changeStateTo(to uint32) {
 	switch to {
 	case internalOpen:
 		b.setLocked(true)
+		ts, locked := b.lockStatus()
+		if locked {
+			newState.Opened = &ts
+			end := ts.Add(b.lockout)
+			newState.LockoutEnds = &end
+		}
 	case internalThrottled:
 		b.setThrottled(true)
+		ts, throttled := b.throttledStatus()
+		if throttled {
+			newState.Throttled = &ts
+			end := ts.Add(b.backoff)
+			newState.BackOffEnds = &end
+		}
 	case internalClosed:
 		b.setClosed(true)
+		ts, closed := b.closedStatus()
+		if closed {
+			newState.ClosedSince = &ts
+		}
+	}
+
+	// this will prevent a block if no one is listening on the other end
+	select {
+	case b.stateChange <- newState:
+	default:
+		dumps("no one's listening")
+		break
 	}
 }
 
@@ -376,6 +416,7 @@ func (b *Breaker) recordNonFailure() {
 	if atomic.LoadUint32(&b.state) != internalThrottled {
 		return
 	}
+	//TODO: am I still necessary?
 }
 
 func (b *Breaker) applyThrottle() error {
@@ -383,9 +424,6 @@ func (b *Breaker) applyThrottle() error {
 	if rand.New(rand.NewSource(time.Now().UnixNano())).Uint32()%100 >= chance {
 		return nil
 	}
-	//if b.rando.Uint32()%100 >= chance {
-	//	return nil
-	//}
 
 	return StateThrottledError
 }
@@ -471,6 +509,10 @@ func (b *Breaker) Run(ctx context.Context, f func(context.Context) (interface{},
 // State returns the current state of the circuit breaker
 func (b *Breaker) State() State {
 	return State(atomic.LoadUint32(&b.state))
+}
+
+func (b *Breaker) StateChange() <-chan BreakerState {
+	return b.stateChange
 }
 
 // Size gets the number of errors present in the
