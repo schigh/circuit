@@ -41,3 +41,15 @@ func (s State) String() string {
 	}
 	return "unknown"
 }
+
+func (s State) MarshalJSON() ([]byte, error) {
+	switch s {
+	case Closed:
+		return []byte{'"', 'c', 'l', 'o', 's', 'e', 'd', '"'}, nil
+	case Throttled:
+		return []byte{'"', 't', 'h', 'r', 'o', 't', 't', 'l', 'e', 'd', '"'}, nil
+	case Open:
+		return []byte{'"', 'o', 'p', 'e', 'n', '"'}, nil
+	}
+	return []byte{'"', 'u', 'n', 'k', 'n', 'o', 'w', 'n', '"'}, nil
+}
