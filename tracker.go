@@ -11,10 +11,11 @@ const (
 )
 
 type errTracker struct {
-	events map[int64]uint32
-	window int64
-	pipe   chan struct{}
-	sz     *uint32
+	events    map[int64]uint32
+	window    int64
+	pipe      chan struct{}
+	resetPipe chan struct{}
+	sz        *uint32
 }
 
 func newErrTracker(dur time.Duration) errTracker {
@@ -22,6 +23,7 @@ func newErrTracker(dur time.Duration) errTracker {
 	e.events = make(map[int64]uint32)
 	e.window = int64(dur)
 	e.pipe = make(chan struct{})
+	e.resetPipe = make(chan struct{})
 	var sz uint32
 	e.sz = &sz
 
@@ -40,6 +42,8 @@ func (e errTracker) poll() {
 				e.evict(window)
 			case <-e.pipe:
 				e.record()
+			case <-e.resetPipe:
+				e.evict(0)
 			}
 		}
 	}(&e)
@@ -100,12 +104,5 @@ func (e errTracker) reset(do bool) {
 	if !do {
 		return
 	}
-	keys := make([]int64, 0, len(e.events))
-	for k := range e.events {
-		keys = append(keys, k)
-	}
-	for i := range keys {
-		delete(e.events, keys[i])
-	}
-	atomic.StoreUint32(e.sz, 0)
+	e.resetPipe <- struct{}{}
 }
