@@ -41,12 +41,12 @@ func main() {
 	execTimer := time.NewTimer(10 * time.Minute)
 
 	b := circuit.NewBreaker(circuit.BreakerOptions{
-		Window:    30 * time.Second,
-		Threshold: 3,
-		LockOut:   5 * time.Second,
-		BackOff:   20 * time.Second,
-		//OpeningWillResetErrors: true,
-		InterpolationFunc: circuit.EaseInOut,
+		Window:                 30 * time.Second,
+		Threshold:              3,
+		LockOut:                5 * time.Second,
+		BackOff:                20 * time.Second,
+		OpeningWillResetErrors: true,
+		InterpolationFunc:      circuit.EaseInOut,
 	})
 
 	stateChange := b.StateChange()

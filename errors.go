@@ -1,11 +1,17 @@
 package circuit
 
-import "errors"
+type Error struct {
+	msg string
+}
+
+func (e Error) Error() string {
+	return e.msg
+}
 
 var (
-	NotInitializedError = errors.New("circuit: breaker must be instantiated with NewBreaker")
-	TimeoutError        = errors.New("circuit: breaker timed out")
-	StateUnknownError   = errors.New("circuit: unknown state")
-	StateOpenError      = errors.New("circuit: the circuit breaker is open")
-	StateThrottledError = errors.New("circuit: breaker is throttled")
+	NotInitializedError = Error{"circuit: breaker must be instantiated with NewBreaker"}
+	TimeoutError        = Error{"circuit: breaker timed out"}
+	StateUnknownError   = Error{"circuit: unknown state"}
+	StateOpenError      = Error{"circuit: the circuit breaker is open"}
+	StateThrottledError = Error{"circuit: breaker is throttled"}
 )

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync/atomic"
 	"syscall"
@@ -32,6 +33,8 @@ func main() {
 					_, _ = fmt.Fprintf(os.Stderr, "\n\n%v\n\n", err)
 				}
 				_, _ = fmt.Fprintf(os.Stderr, "\n\n%s\n\n", data)
+				cmd := exec.Command("say", "-v", "Veena", state.Name, state.State.String())
+				go cmd.Run()
 			}
 		}
 	}()
@@ -40,8 +43,8 @@ func main() {
 		Name:                   "cb1",
 		Timeout:                time.Second,
 		BackOff:                10 * time.Second,
-		Window:                 30 * time.Second,
-		Threshold:              5,
+		Window:                 5 * time.Second,
+		Threshold:              2,
 		OpeningWillResetErrors: true,
 		LockOut:                5 * time.Second,
 	})
@@ -69,7 +72,7 @@ func main() {
 	go func(cb1, cb2, cb3 *circuit.Breaker, stop *uint32) {
 		ctx := context.Background()
 		f := func(ctx context.Context) (interface{}, error) {
-			if rand.Intn(100) > 80 {
+			if rand.Intn(100) > 95 {
 				return nil, errors.New("something happened")
 			}
 			return nil, nil

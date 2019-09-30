@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
 	"path"
 	"runtime"
 	"strings"
@@ -147,6 +146,9 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 	}
 	if b.baudrate == 0 {
 		b.baudrate = DefaultBaudRate
+	}
+	if b.baudrate < minimumBaudRate {
+		b.baudrate = minimumBaudRate
 	}
 	if b.backoff == 0 {
 		b.backoff = DefaultBackOff
@@ -558,13 +560,13 @@ func timeFromNS(ns int64) time.Time {
 }
 
 func dump(i interface{}) {
-	_, _ = fmt.Fprintf(os.Stderr, "%#v\n", i)
+	//_, _ = fmt.Fprintf(os.Stderr, "%#v\n", i)
 }
 
 func dumpf(f string, i ...interface{}) {
-	_, _ = fmt.Fprintf(os.Stderr, f+"\n", i...)
+	//_, _ = fmt.Fprintf(os.Stderr, f+"\n", i...)
 }
 
 func dumps(s string) {
-	_, _ = fmt.Fprintln(os.Stderr, s)
+	//_, _ = fmt.Fprintln(os.Stderr, s)
 }

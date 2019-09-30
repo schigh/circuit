@@ -6,11 +6,12 @@ const (
 	DefaultTimeout   = 3 * time.Second
 	DefaultBaudRate  = 250 * time.Millisecond
 	DefaultBackOff   = time.Minute
-	DefaultWindow    = 10 * time.Minute
+	DefaultWindow    = 5 * time.Minute
 	DefaultThreshold = uint32(5)
 
 	minimumWindow    = 5 * time.Second
 	minimumBackoff   = time.Second
+	minimumBaudRate  = 10 * time.Millisecond
 	minimumThreshold = uint32(1)
 )
 
