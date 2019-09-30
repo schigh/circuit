@@ -135,7 +135,8 @@ The `error` returned from `Run` can take the following forms:
 If the circuit breaker's `Timeout` setting is eclipsed while `Run` is executing,
 the context will cancel and `Run` will return `nil, circuit.TimeoutError`.
 The canceled context will propagate downstream to any logic that is listening for
-context cancellation.
+context cancellation.  If the `IgnoreContext` flag of `BreakerOptions` is set true, 
+the context cancellation will _not_ propagate downstream.
 
 ### Transition States
 
@@ -268,5 +269,45 @@ the circuit breaker entered the throttled state.
 > when the circuit breaker state is serialized, its string value is returned
 
 ### Reading circuit breaker state
+
+There are a few ways you can examine a circuit breaker to see how it's getting along:
+
+#### `State()`
+
+If you only want the circuit breaker's current state, this is the function you want
+to use, as it's the least disruptive to the internal workings of the circuit breaker.
+`State()` returns a `circuit.State` value:
+
+```go
+breaker := circuit.NewBreaker(circuit.BreakerOptions{})
+state := breaker.State()
+// do something with state
+```
+
+#### `Size()`
+
+`Size()` returns the number of errors counted in the current window.  The primary
+usefullness of this function is to observe the decay rate for circuit breaker tuning:
+
+```go
+breaker := circuit.NewBreaker(circuit.BreakerOptions{})
+
+...
+
+t := time.NewTicker(100 * time.Millisecond)
+go func(breaker *circuit.Breaker, t *time.Ticker){
+    for {
+        select {
+        case <-t.C:
+            _,_ = fmt.Fprintf(os.StdErr, "size: %d\n", breaker.Size())
+        }
+    }
+}(breaker, t)
+```
+
+#### `Snapshot()`
+
+`Snapshot()` will give you the same information that is made available during a
+state change event (a `BreakerState` struct).
 
 ## `Box`
