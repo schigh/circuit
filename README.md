@@ -140,6 +140,7 @@ context cancellation.
 ### Transition States
 
 The state transitions for circuit breakers are as follows:
+
 | From          | To            | Description                                                                                                          |
 |-----------    |-----------    |------------------------------------------------------------------------------------------------------------------    |
 | New           | Closed        | The circuit breaker was just created                                                                                 |
