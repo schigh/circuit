@@ -199,6 +199,10 @@ for fitness.  Preprocessors run in order, where the output `context.Context` and
 
 > :information_source: If any preprocessor returns a non-nil error, that error is
 > returned from `Run`.
+>
+> :warning: The `Run` function will _always_ return an error if a canceled or deadlined
+> context is passed to the Runner.  If you want to override this behavior, you would
+> use a preprocessor.
 
 Postprocessors are executed in order after the Runner has returned a value, including
 if the circuit breaker has timed out.  Like preprocessors, postprocessors pass their
