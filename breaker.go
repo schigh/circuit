@@ -24,38 +24,40 @@ type Runner func(context.Context) (interface{}, error)
 // BreakerOptions contains configuration options for a circuit breaker
 type BreakerOptions struct {
 	// Name is the circuit breaker name. If name is not provided,
-	// a unique name will be created based on the caller to NewBreaker
+	// a unique name will be created based on the caller to NewBreaker.
 	Name string
 
 	// Timeout is the maximum duration that the Run func
-	// can execute before timing out.  The default is 3 seconds.
+	// can execute before timing out.  The default Timeout
+	// is 3 seconds.
 	Timeout time.Duration
 
 	// BaudRate is the duration between error calculations.
-	// The default value is 250ms
+	// The default value is 250ms.  The minimum BaudRate
+	// is 10ms
 	BaudRate time.Duration
 
-	// Backoff is the duration that a circuit breaker is
-	// throttled.  The default Backoff is 1 minute.
-	// The minimum Backoff is 1 second
+	// BackOff is the duration that a circuit breaker is
+	// throttled.  The default BackOff is 1 minute.
+	// The minimum BackOff is 1 second.
 	BackOff time.Duration
 
 	// Window is the length of time checked for error
-	// calculation. The default window is 10 minutes.
-	// The minimum window is 10 seconds
+	// calculation. The default Window is 5 minutes.
+	// The minimum Window is 5 seconds.
 	Window time.Duration
 
 	// Threshold is the maximum number of errors that
 	// can occur within the window before the circuit
-	// breaker opens.  The default threshold is 5 errors.
-	// The minimum value is 1 error.
+	// breaker opens. By default, one error will open
+	// the circuit breaker.
 	Threshold uint32
 
 	// LockOut is the length of time that a circuit breaker
 	// is forced open before attempting to throttle.
 	// If no lockout is provided, the circuit breaker will
 	// transition to a throttled state only after its error
-	// count is at or below the threshold.  When a circuit
+	// count is at or below the threshold.  While a circuit
 	// breaker is open, all requests are rejected and no
 	// new errors are recorded.
 	LockOut time.Duration
@@ -63,11 +65,11 @@ type BreakerOptions struct {
 	// OpeningWillResetErrors will cause the error count to reset
 	// when the circuit breaker opens.  If this is set true, all
 	// blocked calls will come from the throttled backoff, unless
-	// the circuit breaker has a lockout duration
+	// the circuit breaker has a lockout duration.
 	OpeningWillResetErrors bool
 
 	// IgnoreContext will prevent context cancellation to
-	// propagate to any in-flight Run functions
+	// propagate to any in-flight Run functions.
 	IgnoreContext bool
 
 	// InterpolationFunc is the function used to determine
@@ -75,10 +77,17 @@ type BreakerOptions struct {
 	// backoff period.  By default, Linear interpolation is used.
 	InterpolationFunc InterpolationFunc
 
-	// PreProcessors will run on the input to Run just before Run executes
+	// PreProcessors are functions that execute in order before
+	// the Runner function is executed.  If a preprocessor
+	// returns an error, the execution is canceled and the error
+	// is returned from Run.
 	PreProcessors []PreProcessor
 
-	// PostProcessors will run on the output of RUn
+	// PostProcessors are functions that execute in order after
+	// the Runner has executed.  The return values from the
+	// Runner are passed along to the first postprocessor.
+	// If there are subsequent postprocessors, each will take
+	// the return value of its predecessor.
 	PostProcessors []PostProcessor
 }
 
@@ -415,14 +424,14 @@ func (b *Breaker) applyThrottle() error {
 	return StateThrottledError
 }
 
-func (b *Breaker) preProcess(ctx context.Context, runner Runner) (Runner, error) {
+func (b *Breaker) preProcess(ctx context.Context, runner Runner) (context.Context, Runner, error) {
 	var err error
 	for i := range b.preprocessors {
-		if runner, err = b.preprocessors[i](ctx, runner); err != nil {
-			return nil, err
+		if ctx, runner, err = b.preprocessors[i](ctx, runner); err != nil {
+			return ctx, nil, err
 		}
 	}
-	return runner, nil
+	return ctx, runner, nil
 }
 
 func (b *Breaker) postProcess(ctx context.Context, p interface{}, err error) (interface{}, error) {
@@ -460,7 +469,7 @@ func (b *Breaker) Run(ctx context.Context, runner Runner) (interface{}, error) {
 
 	// run any preprocessors
 	var preErr error
-	runner, preErr = b.preProcess(ctx, runner)
+	ctx, runner, preErr = b.preProcess(ctx, runner)
 	if preErr != nil {
 		return nil, preErr
 	}

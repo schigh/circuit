@@ -550,8 +550,8 @@ func TestBreaker(t *testing.T) {
 			theError := errors.New("you shall not pass")
 			breaker := NewBreaker(BreakerOptions{
 				PreProcessors: []PreProcessor{
-					func(ctx context.Context, runner Runner) (Runner, error) {
-						return nil, theError
+					func(ctx context.Context, runner Runner) (context.Context, Runner, error) {
+						return ctx, nil, theError
 					},
 				},
 			})
@@ -569,8 +569,8 @@ func TestBreaker(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{
 				PreProcessors: []PreProcessor{
-					func(ctx context.Context, runner Runner) (Runner, error) {
-						return func(ctx context.Context) (interface{}, error) {
+					func(ctx context.Context, runner Runner) (context.Context, Runner, error) {
+						return ctx, func(ctx context.Context) (interface{}, error) {
 							return true, nil
 						}, nil
 					},

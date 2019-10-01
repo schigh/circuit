@@ -44,15 +44,15 @@ type BreakerOptions struct {
 
     // Threshold is the maximum number of errors that
     // can occur within the window before the circuit
-    // breaker opens.  The default Threshold is 5 errors.
-    // The minimum Threshold is 1 error.
+    // breaker opens. By default, one error will open
+    // the circuit breaker.
     Threshold uint32
 
     // LockOut is the length of time that a circuit breaker
     // is forced open before attempting to throttle.
     // If no lockout is provided, the circuit breaker will
     // transition to a throttled state only after its error
-    // count is at or below the threshold.  When a circuit
+    // count is at or below the threshold.  While a circuit
     // breaker is open, all requests are rejected and no
     // new errors are recorded.
     LockOut time.Duration
@@ -60,17 +60,30 @@ type BreakerOptions struct {
     // OpeningWillResetErrors will cause the error count to reset
     // when the circuit breaker opens.  If this is set true, all
     // blocked calls will come from the throttled backoff, unless
-    // the circuit breaker has a lockout duration
+    // the circuit breaker has a lockout duration.
     OpeningWillResetErrors bool
 
     // IgnoreContext will prevent context cancellation to
-    // propagate to any in-flight Run functions
+    // propagate to any in-flight Run functions.
     IgnoreContext bool
 
     // InterpolationFunc is the function used to determine
     // the chance of a request being throttled during the
     // backoff period.  By default, Linear interpolation is used.
     InterpolationFunc InterpolationFunc
+
+    // PreProcessors are functions that execute in order before
+    // the Runner function is executed.  If a preprocessor
+    // returns an error, the execution is canceled and the error
+    // is returned from Run.
+    PreProcessors []PreProcessor
+
+    // PostProcessors are functions that execute in order after
+    // the Runner has executed.  The return values from the
+    // Runner are passed along to the first postprocessor.
+    // If there are subsequent postprocessors, each will take
+    // the return value of its predecessor.
+    PostProcessors []PostProcessor
 }
 ```
 
@@ -135,8 +148,62 @@ The `error` returned from `Run` can take the following forms:
 If the circuit breaker's `Timeout` setting is eclipsed while `Run` is executing,
 the context will cancel and `Run` will return `nil, circuit.TimeoutError`.
 The canceled context will propagate downstream to any logic that is listening for
-context cancellation.  If the `IgnoreContext` flag of `BreakerOptions` is set true, 
+context cancellation.  If the `IgnoreContext` flag of `BreakerOptions` is set true,
 the context cancellation will _not_ propagate downstream.
+
+#### Preprocessing and Postprocessing
+
+You can intercept the parameters before invoking the Runner via preprocessors.
+Likewise, you can intercept the Runner's output before returning from `Run` via
+postprocessors.  Take the following example:
+
+```go
+type str string
+
+breaker := circuit.NewBreaker(circuit.BreakerOptions{
+    PreProcessors: []circuit.PreProcessor{
+        func(ctx context.Context, runner circuit.Runner) (context.Context, circuit.Runner, error) {
+            return context.WithValue(ctx, str("start"), time.Now().Unix()), runner, nil
+        },
+    },
+    PostProcessors: []circuit.PostProcessor{
+        func(ctx context.Context, i interface{}, err error) (interface{}, error) {
+            end := time.Now().Unix()
+            start, _ := ctx.Value(str("start")).(int64)
+            fmt.Printf("Run took %d seconds", end-start)
+
+            return i, err
+        },
+    }
+})
+
+```
+
+The preprocessor intercepts the context and replaces it with a context with an added
+value.  The Runner executes, and then the postprocessor intercepts the context and
+extracts the value added in the preprocessor, which in this case is a time stamp.
+
+The function signatures are as follows:
+
+```go
+type PreProcessor func(context.Context, Runner) (context.Context, Runner, error)
+```
+
+```go
+type PostProcessor func(context.Context, interface{}, error) (interface{}, error)
+```
+
+Preprocessors run _before_ the circuit breaker's state or the context is checked
+for fitness.  Preprocessors run in order, where the output `context.Context` and
+`circuit.Runner` are input to each subscquent preprocessor.
+
+> :information_source: If any preprocessor returns a non-nil error, that error is
+> returned from `Run`.
+
+Postprocessors are executed in order after the Runner has returned a value, including
+if the circuit breaker has timed out.  Like preprocessors, postprocessors pass their
+output to the next postprocessor if there is one.  The final outputs are then returned
+from `Run`.
 
 ### Transition States
 
