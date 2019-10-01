@@ -23,8 +23,7 @@ func NewBreakerBox() *BreakerBox {
 				select {
 				case stateChange <- state:
 				default:
-					// no one's listening
-					dumps("no one's listening ")
+					// no one's listening, don't block
 				}
 			}
 		}

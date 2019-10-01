@@ -40,6 +40,10 @@ func main() {
 
 	execTimer := time.NewTimer(10 * time.Minute)
 
+	//pp := func(ctx context.Context, i interface{}, err error) (interface{}, error) {
+	//	return i, err
+	//}
+
 	b := circuit.NewBreaker(circuit.BreakerOptions{
 		Window:                 30 * time.Second,
 		Threshold:              3,
@@ -47,6 +51,7 @@ func main() {
 		BackOff:                20 * time.Second,
 		OpeningWillResetErrors: true,
 		InterpolationFunc:      circuit.EaseInOut,
+		//PostProcessors:         []circuit.PostProcessor{pp},
 	})
 
 	stateChange := b.StateChange()

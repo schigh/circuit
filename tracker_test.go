@@ -20,12 +20,11 @@ func newTracker(t *testing.T, dur, tick time.Duration) errTracker {
 	}
 
 	var sz uint32
-	e := errTracker{mx: &sync.Mutex{}, sz: &sz}
+	e := errTracker{sz: &sz}
 	e.events = make(map[int64]uint32)
 	e.window = int64(dur)
 	e.pipe = make(chan struct{})
-
-	e.clock = time.NewTicker(tick)
+	e.resetPipe = make(chan struct{})
 	e.poll()
 
 	return e
@@ -270,8 +269,8 @@ func TestTracker(t *testing.T) {
 			s3 := getSizes(t, "t3", c3)
 
 			expected1 := []int{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10}
-			expected2 := []int{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 8, 7, 7, 7, 6, 6, 4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0}
-			expected3 := []int{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 3, 2, 4, 4, 5, 5, 5, 4, 5, 5, 4, 4, 2, 3, 2, 2, 2, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+			expected2 := []int{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 6, 6, 7, 7, 7, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0}
+			expected3 := []int{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 2, 3, 3, 5, 5, 6, 5, 5, 6, 6, 6, 5, 5, 5, 6, 6, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 			if !relativelyEqual(t, s1, expected1) {
 				t.Errorf("t1 failure:\nexpected: %#v\n     got: %#v\n", expected1, s1)
@@ -334,5 +333,33 @@ func TestTracker(t *testing.T) {
 				t.Errorf("t3 failure:\nexpected: %#v\n     got: %#v\n", expected3, s3)
 			}
 		})
+	})
+
+	t.Run("reset", func(t *testing.T) {
+		tracker := newTracker(t, 10*time.Second, 10*time.Millisecond)
+		tracker.incr()
+		tracker.incr()
+		tracker.incr()
+		var sz uint32
+		sz = tracker.size()
+		if sz != 3 {
+			t.Fatalf("expected size 3, got %d", sz)
+		}
+
+		tracker.reset(false)
+
+		sz = tracker.size()
+		if sz != 3 {
+			t.Fatalf("expected size 3, got %d", sz)
+		}
+
+		tracker.reset(true)
+
+		// gotta let the polling goroutine catch up
+		time.Sleep(time.Millisecond)
+		sz = tracker.size()
+		if sz != 0 {
+			t.Fatalf("expected size 0, got %d", sz)
+		}
 	})
 }

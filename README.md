@@ -311,3 +311,7 @@ go func(breaker *circuit.Breaker, t *time.Ticker){
 state change event (a `BreakerState` struct).
 
 ## `Box`
+
+Managing an individual circuit breaker is fairly simple, but it can quickly become overwhelming when you need to manage several circuit breakers at once.
+
+The Breaker `Box` allows you to quickly and easily manage multiple circuit breakers within your application.
