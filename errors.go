@@ -14,4 +14,5 @@ var (
 	StateUnknownError   = Error{"circuit: unknown state"}
 	StateOpenError      = Error{"circuit: the circuit breaker is open"}
 	StateThrottledError = Error{"circuit: breaker is throttled"}
+	UnnamedBreakerError = Error{"circuit: breakers used in a breaker box must have a name"}
 )

@@ -23,13 +23,13 @@ description
     - [`State()`](#state)
     - [`Size()`](#size)
     - [`Snapshot()`](#snapshot)
-- [`Box`]
+- [`Box`](#box)
 
-## installation
+## Installation
 
 `go get -u github.com/schigh/circuit`
 
-## usage
+## Usage
 
 ### Create new circuit breakers with `NewBreaker`
 
@@ -314,14 +314,14 @@ access this channel by calling `StateChange()` on the circuit breaker:
 breaker := circuit.NewBreaker(circuit.BreakerOptions{})
 changeChan := breaker.StateChange()
 
-go func(breaker *circuit.Breaker, changeChan chan circuit.BreakerState) {
+go func(changeChan chan circuit.BreakerState) {
     for {
         select {
         case state := <-changeChan:
             doSomethingWith(state)
         }
     }
-}(breaker, changeChan)
+}(changeChan)
 
 ```
 
@@ -406,8 +406,94 @@ go func(breaker *circuit.Breaker, t *time.Ticker){
 `Snapshot()` will give you the same information that is made available during a
 state change event (a `BreakerState` struct).
 
-## `Box`
+### Managing circuit breakers with `Box`
 
-Managing an individual circuit breaker is fairly simple, but it can quickly become overwhelming when you need to manage several circuit breakers at once.
+Managing an individual circuit breaker is fairly simple, but it can quickly become
+tedious and verbose when you need to manage several circuit breakers at once.
 
-The Breaker `Box` allows you to quickly and easily manage multiple circuit breakers within your application.
+The Breaker `Box` allows you to easily manage multiple circuit breakers
+within your application.
+
+#### Create a breaker box and listen for state changes
+
+A breaker box exposes a read-only channel of `BreakerState` structs, just like a
+`Breaker` does.  If you're using the breaker box, you _don't_ want to listen for
+state changes on individual circuit breakers.  All circuit breaker state changes
+are funneled to the box state change channel.
+
+You should always create a new breaker box with `NewBreakerBox()`:
+
+```go
+box := circuit.NewBreakerBox()
+```
+
+> :warning: Breaker boxes **must** be created with `NewBreakerBox`.  Creating a
+> breaker box any other way will cause your program to panic.
+
+Listening for state changes is the same as it is for individual circuit breakers.
+`BreakerBox` also has a `StateChange()` function to expose the state change channel:
+
+```go
+changeChan := box.StateChange()
+
+go func(changeChan chan circuit.BreakerState) {
+    for {
+        select {
+        case state := <-changeChan:
+            doSomethingWith(state)
+        }
+    }
+}(changeChan)
+```
+
+#### Getting and setting circuit breakers
+
+The most efficient way to get a circuit breaker is to use `LoadOrCreate`:
+
+```go
+box := circuit.NewBreakerBox()
+
+// ...
+
+breaker, err := box.LoadOrCreate(circuit.BreakerOptions{
+    Name: "more_cowbell_cb",
+})
+if err != nil {
+    // handle error
+}
+
+// ...
+
+result, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+    // needMoreCowbell returns interface{}, error
+    return needMoreCowbell()
+})
+
+// ...
+```
+
+If the circuit breaker already exists, it is returned, and the error will be nil.
+Otherwise, `LoadOrCreate` will make a new circuit breaker using the supplied options.
+
+> :warning: Circuit breakers created by the breaker box **must** have an
+> explicitly-created name, unlike a standalone circuit breaker.  If no name is
+> provided, `UnnamedBreakerError` is returned
+
+#### Other box functions
+
+##### `Load(name string)`
+
+`Load` will return a circuit breaker by name if it exists, and `nil` otherwise
+
+##### `Create(opts BreakerOptions)`
+
+`Create` will create a new circuit breaker with the supplied options and return
+it.  If a circuit breaker with the same name already exists, it will be overwritten.
+Just as in `LoadOrCreate`, the `Name` option must be set for the new circuit breaker.
+
+##### `AddBYO(b *Breaker)`
+
+`AddBYO` allows you to create circuit breakers outside of the breaker box and then
+use the box for storage and retrieval.  However, circuit breakers added via `AddBYO`
+will **not** report their state changes to the breaker box, so you will need to manage
+those state changes yourself.

@@ -4,14 +4,6 @@ import (
 	"sync"
 )
 
-type BreakerMap interface {
-	get(string) *Breaker
-	keys() []string
-	set(string, *Breaker)
-	delete(string)
-	clear()
-}
-
 // breakerMap wraps map[string]*circuit.Breaker, and locks reads and writes with a mutex
 type breakerMap struct {
 	mx   *sync.RWMutex

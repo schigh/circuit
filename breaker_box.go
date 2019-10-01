@@ -3,11 +3,13 @@ package circuit
 import "sync"
 
 type BreakerBox struct {
-	breakers    BreakerMap
+	breakers    breakerMap
 	stateChange chan BreakerState
 	funnel      chan BreakerState
 }
 
+// NewBreakerBox will return a BreakerBox with all internals properly configured.
+// Use this function at all times when creating a new instance.
 func NewBreakerBox() *BreakerBox {
 	breakerMap := breakerMap{
 		mx:   &sync.RWMutex{},
@@ -36,21 +38,27 @@ func NewBreakerBox() *BreakerBox {
 	}
 }
 
+// StateChange exposes the breaker breaker state channel of the box
 func (bb *BreakerBox) StateChange() <-chan BreakerState {
 	return bb.stateChange
 }
 
+// Load will fetch a circuit breaker by name if it exists
 func (bb *BreakerBox) Load(name string) *Breaker {
 	return bb.breakers.get(name)
 }
 
-func (bb *BreakerBox) Add(b *Breaker) {
+// AddBYO will add a Breaker to the box, but the breaker's state changes
+// will not be funneled to the box's state change output
+func (bb *BreakerBox) AddBYO(b *Breaker) {
 	bb.breakers.set(b.name, b)
 }
 
-func (bb *BreakerBox) Create(opts BreakerOptions) *Breaker {
+// Create will generate a new circuit breaker with the supplied options and return it.
+// If a breaker with the same name already exists in the box, it will be discarded.
+func (bb *BreakerBox) Create(opts BreakerOptions) (*Breaker, error) {
 	if opts.Name == "" {
-		return nil
+		return nil, UnnamedBreakerError
 	}
 	b := NewBreaker(opts)
 	go func(b *Breaker, bb *BreakerBox) {
@@ -63,12 +71,14 @@ func (bb *BreakerBox) Create(opts BreakerOptions) *Breaker {
 	}(b, bb)
 	bb.breakers.set(b.name, b)
 
-	return b
+	return b, nil
 }
 
-func (bb *BreakerBox) LoadOrCreate(opts BreakerOptions) *Breaker {
+// LoadOrCreate will attempt to load a circuit breaker by name.  If the breaker doesnt exist, a
+// new one with the supplied options will be created and returned.
+func (bb *BreakerBox) LoadOrCreate(opts BreakerOptions) (*Breaker, error) {
 	if breaker := bb.breakers.get(opts.Name); breaker != nil {
-		return breaker
+		return breaker, nil
 	}
 	return bb.Create(opts)
 }
