@@ -1,4 +1,4 @@
-# circuit
+![circuit](_img/logo.png)
 
 badges
 
