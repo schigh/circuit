@@ -4,6 +4,27 @@ badges
 
 description
 
+<!-- toc -->
+- [installation](#installation)
+- [usage](#usage)
+  - [Create new circuit breakers with `NewBreaker`](#create-new-circuit-breakers-with-newbreaker)
+  - [Running the circuit breaker](#running-the-circuit-breaker)
+    - [Preprocessing and Postprocessing](#preprocessing-and-postprocessing)
+  - [Transition States](#transition-states)
+  - [LockOut](#lockout)
+  - [Backoff Strategy](#backoff-strategy)
+    - [Linear interpolation (default)](#linear-interpolation-default)
+    - [Logarithmic interpolation](#logarithmic-interpolation)
+    - [Exponential interpolation](#exponential-interpolation)
+    - [Ease-In-Out interpolation](#ease-in-out-interpolation)
+  - [Capturing circuit breaker state changes](#capturing-circuit-breaker-state-changes)
+    - [`BreakerState`](#breakerstate)
+  - [Reading circuit breaker state](#reading-circuit-breaker-state)
+    - [`State()`](#state)
+    - [`Size()`](#size)
+    - [`Snapshot()`](#snapshot)
+- [`Box`]
+
 ## installation
 
 `go get -u github.com/schigh/circuit`
@@ -223,7 +244,7 @@ The state transitions for circuit breakers are as follows:
 
 ### LockOut
 
-When a circuit breaker opens, it will lock out for a specified duration.  During
+When a circuit breaker opens, it can lock out for a specified duration.  During
 that time, all invocations of `Run` immediately return a `circuit.StateOpenError`,
 even if the error count has gone below the threshold.  By default, the lockout duration
 is 0.  It can be set with the `LockOut` property of the `BreakerOptions` struct.
@@ -304,6 +325,10 @@ go func(breaker *circuit.Breaker, changeChan chan circuit.BreakerState) {
 
 ```
 
+> :information_source: The breaker will not block if there's no receiver for the
+> channel returned from `StateChange()`.  However, this is the only way to detect
+> state changes from a circuit breaker.
+
 #### `BreakerState`
 
 The circuit breaker uses the `BreakerState` struct to communicate state changes:
@@ -337,7 +362,7 @@ the circuit breaker entered the throttled state.
 the circuit breaker entered the throttled state.
 
 > :information_source: The `State` property of `BreakerState` is an integer.  However,
-> when the circuit breaker state is serialized, its string value is returned
+> when the circuit breaker state is serialized, its string value is used.
 
 ### Reading circuit breaker state
 
