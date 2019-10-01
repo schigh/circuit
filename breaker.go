@@ -109,15 +109,15 @@ type Breaker struct {
 	throttleCreated int64 // Unix nano timestamp of throttle creation time
 	closedSince     int64 // Unix nano timestamp of last closed time (or creation)
 
+	// name
+	name string // Circuit Breaker name
+
 	// timings
 	timeout  time.Duration // Timeout for Run func
 	baudrate time.Duration // Polling rate to recalculate error counts
 	backoff  time.Duration // Length of time the breaker is throttled
 	lockout  time.Duration // Length of time a breaker is locked out once it opens
 	window   time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
-
-	// name
-	name string // Circuit Breaker name
 
 	// misc
 	stateMX     sync.Mutex        // Mutex around state change
