@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"regexp"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -190,7 +191,7 @@ func TestBreaker(t *testing.T) {
 			breaker.setThrottled(true)
 			time.Sleep(1100 * time.Millisecond)
 
-			if count != 100 {
+			if atomic.LoadUint32(&count) != 100 {
 				t.Fatalf("expected the interpolation func to run 100 times.  It ran %d times", count)
 			}
 		})
@@ -344,8 +345,8 @@ func TestBreaker(t *testing.T) {
 			if lockedSince.IsZero() || !isLocked {
 				t.Fatalf("the circuit breaker should be locked")
 			}
-			t.Log("count", count)
-			if count > 50 {
+			t.Log("count", atomic.LoadUint32(&count))
+			if atomic.LoadUint32(&count) > 50 {
 				t.Fatalf("the throttle should have canceled half way through")
 			}
 		})
@@ -382,11 +383,13 @@ func TestBreaker(t *testing.T) {
 			states := make([]string, 0)
 
 			breaker := NewBreaker(BreakerOptions{LockOut: time.Second, BackOff: minimumBackoff})
-
+			var wg sync.WaitGroup
+			wg.Add(1)
 			go func(stateChange <-chan BreakerState, quit chan struct{}) {
 				for {
 					select {
 					case <-quit:
+						wg.Done()
 						return
 					case state := <-stateChange:
 						states = append(states, state.String())
@@ -399,6 +402,7 @@ func TestBreaker(t *testing.T) {
 			breaker.changeStateTo(internalOpen)
 			time.Sleep(2500 * time.Millisecond)
 			quit <- struct{}{}
+			wg.Wait()
 
 			if !reflect.DeepEqual(states, []string{"closed", "open", "throttled", "open", "throttled", "closed"}) {
 				t.Fatalf("state changes are not registering properly")
@@ -853,7 +857,7 @@ func TestBreaker(t *testing.T) {
 				})
 
 				time.Sleep(30 * time.Millisecond)
-				t.Log("tick", tick)
+				t.Log("tick", atomic.LoadUint32(&tick))
 				if tick != 1 {
 					t.Fatal("context error didnt propagate")
 				}
@@ -877,7 +881,7 @@ func TestBreaker(t *testing.T) {
 				})
 
 				time.Sleep(30 * time.Millisecond)
-				t.Log("tick", tick)
+				t.Log("tick", atomic.LoadUint32(&tick))
 				if tick != 2 {
 					t.Fatal("context error didnt propagate")
 				}
