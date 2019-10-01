@@ -7,16 +7,12 @@ import (
 	"time"
 )
 
-func newTracker(t *testing.T, dur, tick time.Duration) errTracker {
+func newTracker(t *testing.T, dur time.Duration) errTracker {
 	t.Helper()
 
 	if dur == 0 {
 		// set it to a high value so the evictions dont trigger
 		dur = time.Minute
-	}
-	if tick == 0 {
-		// set it to a high value so the calcTicker doesnt fire
-		tick = time.Minute
 	}
 
 	var sz uint32
@@ -35,7 +31,7 @@ func TestTracker(t *testing.T) {
 		t.Parallel()
 		t.Run("empty tracker should be size zero", func(t *testing.T) {
 			t.Parallel()
-			var tracker = newTracker(t, 0, 0)
+			var tracker = newTracker(t, 0)
 			size := tracker.size()
 			if size != 0 {
 				t.Errorf("size(): expected 0, got %d", size)
@@ -43,7 +39,7 @@ func TestTracker(t *testing.T) {
 		})
 		t.Run("tracker should have one item after increment", func(t *testing.T) {
 			t.Parallel()
-			var tracker = newTracker(t, 0, 0)
+			var tracker = newTracker(t, 0)
 			tracker.incr()
 			// let goroutines get all caught up
 			time.Sleep(10 * time.Millisecond)
@@ -54,7 +50,7 @@ func TestTracker(t *testing.T) {
 		})
 		t.Run("calling incr 20 times concurrently", func(t *testing.T) {
 			t.Parallel()
-			var tracker = newTracker(t, 0, 0)
+			var tracker = newTracker(t, 0)
 			for i := 0; i < 20; i++ {
 				tracker.incr()
 			}
@@ -67,7 +63,7 @@ func TestTracker(t *testing.T) {
 		})
 		t.Run("calling incr 1000 times concurrently", func(t *testing.T) {
 			t.Parallel()
-			var tracker = newTracker(t, 0, 0)
+			var tracker = newTracker(t, 0)
 			for i := 0; i < 1000; i++ {
 				tracker.incr()
 			}
@@ -89,9 +85,9 @@ func TestTracker(t *testing.T) {
 			return make(chan int, chanSize),
 				make(chan int, chanSize),
 				make(chan int, chanSize),
-				newTracker(t, 10*time.Second, 10*time.Millisecond),
-				newTracker(t, 5*time.Second, 10*time.Millisecond),
-				newTracker(t, time.Second, 10*time.Millisecond)
+				newTracker(t, 10*time.Second),
+				newTracker(t, 5*time.Second),
+				newTracker(t, time.Second)
 		}
 
 		getSizes := func(t *testing.T, name string, c chan int) []int {
@@ -336,7 +332,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("reset", func(t *testing.T) {
-		tracker := newTracker(t, 10*time.Second, 10*time.Millisecond)
+		tracker := newTracker(t, 10*time.Second)
 		tracker.incr()
 		tracker.incr()
 		tracker.incr()

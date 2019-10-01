@@ -11,25 +11,10 @@ help: ## prints this help
 
 setup: ## downloads dependencies
 	go get -u github.com/golangci/golangci-lint/cmd/golangci-lint
-	go get -u github.com/robertkrimen/godocdown/godocdown
 	# removes the above packages from go.mod...we only need them locally
 	go mod tidy
 
-.PHONY: doc doc-check lint test test-race fmt imports # go commands
-doc: ## generates markdown documentation
-	@printf "${_YELLOW}generatic godoc documentation...${_NC}\n"
-	@for d in ${PKG_DIRS}; do \
-		godocdown -o $$d/README.md $$d; \
-	done; \
-
-doc-check: ## checks the validity of generated documentation
-	@for d in ${PKG_DIRS}; do \
-		if [[ ! -f "$$d/README.md" ]]; then echo "file $$d/README.md does not exist"; exit 1; fi; \
-		godocdown -o $$d/DOC_CHECK.md $$d; \
-		echo "checking $$d/README.md"; \
-		cmp -s $$d/README.md $$d/DOC_CHECK.md || exit 1; \
-	done; \
-
+.PHONY: lint test test-race fmt imports # go commands
 lint: ## runs the code linter
 	golangci-lint run
 
@@ -46,4 +31,4 @@ fmt: ## apply the gofmt tool
 imports: ## apply imports
 	@goimports -w -local github.com/schigh/circuit .
 
-prepare: doc fmt imports ## prepare code and documentation for commit
+prepare: fmt imports ## prepare code and documentation for commit

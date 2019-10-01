@@ -23,9 +23,21 @@ type Runner func(context.Context) (interface{}, error)
 
 // BreakerOptions contains configuration options for a circuit breaker
 type BreakerOptions struct {
-	// Name is the circuit breaker name. If name is not provided,
-	// a unique name will be created based on the caller to NewBreaker.
-	Name string
+	// OpeningWillResetErrors will cause the error count to reset
+	// when the circuit breaker opens.  If this is set true, all
+	// blocked calls will come from the throttled backoff, unless
+	// the circuit breaker has a lockout duration.
+	OpeningWillResetErrors bool
+
+	// IgnoreContext will prevent context cancellation to
+	// propagate to any in-flight Run functions.
+	IgnoreContext bool
+
+	// Threshold is the maximum number of errors that
+	// can occur within the window before the circuit
+	// breaker opens. By default, one error will open
+	// the circuit breaker.
+	Threshold uint32
 
 	// Timeout is the maximum duration that the Run func
 	// can execute before timing out.  The default Timeout
@@ -47,12 +59,6 @@ type BreakerOptions struct {
 	// The minimum Window is 5 seconds.
 	Window time.Duration
 
-	// Threshold is the maximum number of errors that
-	// can occur within the window before the circuit
-	// breaker opens. By default, one error will open
-	// the circuit breaker.
-	Threshold uint32
-
 	// LockOut is the length of time that a circuit breaker
 	// is forced open before attempting to throttle.
 	// If no lockout is provided, the circuit breaker will
@@ -62,15 +68,9 @@ type BreakerOptions struct {
 	// new errors are recorded.
 	LockOut time.Duration
 
-	// OpeningWillResetErrors will cause the error count to reset
-	// when the circuit breaker opens.  If this is set true, all
-	// blocked calls will come from the throttled backoff, unless
-	// the circuit breaker has a lockout duration.
-	OpeningWillResetErrors bool
-
-	// IgnoreContext will prevent context cancellation to
-	// propagate to any in-flight Run functions.
-	IgnoreContext bool
+	// Name is the circuit breaker name. If name is not provided,
+	// a unique name will be created based on the caller to NewBreaker.
+	Name string
 
 	// InterpolationFunc is the function used to determine
 	// the chance of a request being throttled during the
@@ -93,14 +93,11 @@ type BreakerOptions struct {
 
 // Breaker is the circuit breaker implementation for this package
 type Breaker struct {
-	name string // Circuit Breaker name
 
-	// timings
-	timeout  time.Duration // Timeout for Run func
-	baudrate time.Duration // Polling rate to recalculate error counts
-	backoff  time.Duration // Length of time the breaker is throttled
-	lockout  time.Duration // Length of time a breaker is locked out once it opens
-	window   time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
+	// switches
+	initialized   bool // Flag to check if the breaker was initialized via NewBreaker
+	ignoreContext bool // If true, will not propagate context cancellation
+	openingResets bool // If true, the circuit breaker resets its error count upon opening
 
 	// state
 	threshold      uint32 // Maximum number of errors allowed to occur in window
@@ -112,10 +109,15 @@ type Breaker struct {
 	throttleCreated int64 // Unix nano timestamp of throttle creation time
 	closedSince     int64 // Unix nano timestamp of last closed time (or creation)
 
-	// switches
-	initialized   bool // Flag to check if the breaker was initialized via NewBreaker
-	ignoreContext bool // If true, will not propagate context cancellation
-	openingResets bool // If true, the circuit breaker resets its error count upon opening
+	// timings
+	timeout  time.Duration // Timeout for Run func
+	baudrate time.Duration // Polling rate to recalculate error counts
+	backoff  time.Duration // Length of time the breaker is throttled
+	lockout  time.Duration // Length of time a breaker is locked out once it opens
+	window   time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
+
+	// name
+	name string // Circuit Breaker name
 
 	// misc
 	stateMX     sync.Mutex        // Mutex around state change
@@ -244,12 +246,8 @@ func (b *Breaker) setLocked(is bool) {
 
 	go func(b *Breaker, lockID int64) {
 		t := time.NewTimer(b.lockout)
-		select {
-		case <-t.C:
-			// only swap if we are unlocking from our lock
-			atomic.CompareAndSwapInt64(&b.lockCreated, lockID, 0)
-			return
-		}
+		<-t.C
+		atomic.CompareAndSwapInt64(&b.lockCreated, lockID, 0)
 	}(b, nowNano)
 }
 
@@ -427,7 +425,8 @@ func (b *Breaker) applyThrottle() error {
 func (b *Breaker) preProcess(ctx context.Context, runner Runner) (context.Context, Runner, error) {
 	var err error
 	for i := range b.preprocessors {
-		if ctx, runner, err = b.preprocessors[i](ctx, runner); err != nil {
+		ctx, runner, err = b.preprocessors[i](ctx, runner)
+		if err != nil {
 			return ctx, nil, err
 		}
 	}
