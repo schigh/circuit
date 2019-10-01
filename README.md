@@ -364,7 +364,7 @@ end.
 - `Throttled` is nil unless the state is `Throttled`.  This value indicates when
 the circuit breaker entered the throttled state.
 - `BackOffEnds` is nil unless the state is `Throttled`.  This value indicates when
-the circuit breaker entered the throttled state.
+the current backoff period will end.
 
 > :information_source: The `State` property of `BreakerState` is an integer.  However,
 > when the circuit breaker state is serialized, its string value is used.
@@ -411,20 +411,15 @@ go func(breaker *circuit.Breaker, t *time.Ticker){
 `Snapshot()` will give you the same information that is made available during a
 state change event (a `BreakerState` struct).
 
-### Managing circuit breakers with `Box`
+### Managing circuit breakers with `BreakerBox`
 
 Managing an individual circuit breaker is fairly simple, but it can quickly become
 tedious and verbose when you need to manage several circuit breakers at once.
 
-The Breaker `Box` allows you to easily manage multiple circuit breakers
+The `BreakerBox` allows you to easily manage multiple circuit breakers
 within your application.
 
 #### Create a breaker box and listen for state changes
-
-A breaker box exposes a read-only channel of `BreakerState` structs, just like a
-`Breaker` does.  If you're using the breaker box, you _don't_ want to listen for
-state changes on individual circuit breakers.  All circuit breaker state changes
-are funneled to the box state change channel.
 
 You should always create a new breaker box with `NewBreakerBox()`:
 
@@ -435,8 +430,10 @@ box := circuit.NewBreakerBox()
 > :warning: Breaker boxes **must** be created with `NewBreakerBox`.  Creating a
 > breaker box any other way will cause your program to panic.
 
-Listening for state changes is the same as it is for individual circuit breakers.
-`BreakerBox` also has a `StateChange()` function to expose the state change channel:
+A breaker box exposes a read-only channel of `BreakerState` structs, just like a
+`Breaker` does.  If you're using the breaker box, you _don't_ want to listen for
+state changes on individual circuit breakers.  All circuit breaker state changes
+are funneled to the box state change channel, accessible via `StateChange()`:
 
 ```go
 changeChan := box.StateChange()
@@ -502,3 +499,9 @@ Just as in `LoadOrCreate`, the `Name` option must be set for the new circuit bre
 use the box for storage and retrieval.  However, circuit breakers added via `AddBYO`
 will **not** report their state changes to the breaker box, so you will need to manage
 those state changes yourself.
+
+---
+
+## Tuning circuit breakers
+
+wip
