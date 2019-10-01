@@ -1,6 +1,8 @@
 package circuit
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"regexp"
 	"sync/atomic"
@@ -393,9 +395,9 @@ func TestBreaker(t *testing.T) {
 			}(breaker.StateChange(), quit)
 			time.Sleep(time.Millisecond)
 			breaker.changeStateTo(internalOpen)
-			time.Sleep(1250 * time.Millisecond)
+			time.Sleep(1500 * time.Millisecond)
 			breaker.changeStateTo(internalOpen)
-			time.Sleep(2250 * time.Millisecond)
+			time.Sleep(2500 * time.Millisecond)
 			quit <- struct{}{}
 
 			if !reflect.DeepEqual(states, []string{"closed", "open", "throttled", "open", "throttled", "closed"}) {
@@ -543,6 +545,400 @@ func TestBreaker(t *testing.T) {
 
 	t.Run("preprocessors", func(t *testing.T) {
 		t.Parallel()
+		t.Run("block run", func(t *testing.T) {
+			t.Parallel()
+			theError := errors.New("you shall not pass")
+			breaker := NewBreaker(BreakerOptions{
+				PreProcessors: []PreProcessor{
+					func(ctx context.Context, runner Runner) (Runner, error) {
+						return nil, theError
+					},
+				},
+			})
+
+			_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return true, nil
+			})
+
+			if !errors.Is(err, theError) {
+				t.Fatal("the preprocessor should have blocked execution and returned a specific error")
+			}
+		})
+
+		t.Run("replace run", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{
+				PreProcessors: []PreProcessor{
+					func(ctx context.Context, runner Runner) (Runner, error) {
+						return func(ctx context.Context) (interface{}, error) {
+							return true, nil
+						}, nil
+					},
+				},
+			})
+
+			_result, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return nil, errors.New("i should be overridden")
+			})
+
+			if err != nil {
+				t.Fatal("the error should have been overridden by the preprocessor")
+			}
+
+			result, _ := _result.(bool)
+			if !result {
+				t.Fatal("the result should have been true")
+			}
+		})
+	})
+
+	t.Run("postprocessors", func(t *testing.T) {
+		t.Parallel()
+		t.Run("override output", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{
+				PostProcessors: []PostProcessor{
+					func(ctx context.Context, i interface{}, err error) (interface{}, error) {
+						return true, nil
+					},
+				},
+			})
+			_result, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return nil, errors.New("i should be overridden")
+			})
+			if err != nil {
+				t.Fatal("the error should have been overridden by the postprocessor")
+			}
+
+			result, _ := _result.(bool)
+			if !result {
+				t.Fatal("the result should have been true")
+			}
+		})
+
+		t.Run("override output with error", func(t *testing.T) {
+			t.Parallel()
+			theError := errors.New("you shall not pass")
+			breaker := NewBreaker(BreakerOptions{
+				PostProcessors: []PostProcessor{
+					func(ctx context.Context, i interface{}, err error) (interface{}, error) {
+						return nil, theError
+					},
+				},
+			})
+			_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return true, nil
+			})
+			if !errors.Is(err, theError) {
+				t.Fatal("postprocessor should have returned an error")
+			}
+		})
+	})
+
+	t.Run("check fitness", func(t *testing.T) {
+		t.Parallel()
+		t.Run("with a canceled context", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			breaker := NewBreaker(BreakerOptions{})
+
+			err := breaker.checkFitness(ctx)
+
+			if !errors.Is(err, context.Canceled) {
+				t.Fatal("expected a context.Canceled error")
+			}
+		})
+
+		t.Run("open breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{LockOut: time.Second})
+			breaker.changeStateTo(internalOpen)
+			err := breaker.checkFitness(context.Background())
+
+			if !errors.Is(err, StateOpenError) {
+				t.Fatal("expected StateOpenError")
+			}
+		})
+
+		t.Run("throttled breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{
+				BackOff: minimumBackoff,
+				InterpolationFunc: func(int) uint32 {
+					return 100
+				},
+			})
+			breaker.changeStateTo(internalThrottled)
+			err := breaker.checkFitness(context.Background())
+
+			if !errors.Is(err, StateThrottledError) {
+				t.Fatal("expected StateThrottledError")
+			}
+		})
+
+		t.Run("closed breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{})
+
+			if err := breaker.checkFitness(context.Background()); err != nil {
+				t.Fatal("the error should have been nil")
+			}
+		})
+
+		t.Run("unknown state (PEBKAC edge case)", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{})
+			breaker.state = uint32(100)
+			err := breaker.checkFitness(context.Background())
+
+			if !errors.Is(err, StateUnknownError) {
+				t.Fatal("expected StateUnknownError")
+			}
+		})
+	})
+
+	t.Run("snapshot", func(t *testing.T) {
+		t.Parallel()
+		t.Run("new breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{Name: "foo"})
+			snap := breaker.Snapshot()
+			if snap.Name != "foo" {
+				t.Fatal("snapshot is not capturing breaker name")
+			}
+			if snap.String() != "closed" {
+				t.Fatalf("the stringer for snap returned wrong value: %s", snap.String())
+			}
+			if snap.State != Closed {
+				t.Fatal("state should be Closed")
+			}
+			if snap.ClosedSince == nil {
+				t.Fatal("the ClosedSince property should not be nil")
+			}
+			if snap.Throttled != nil {
+				t.Fatal("the Throttled property should not be set")
+			}
+			if snap.BackOffEnds != nil {
+				t.Fatal("the BackOffEnds property should not be set")
+			}
+			if snap.Opened != nil {
+				t.Fatal("the Opened property should not be set")
+			}
+			if snap.LockoutEnds != nil {
+				t.Fatal("the LockoutEnds property should not be set")
+			}
+		})
+
+		t.Run("throttled breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{Name: "foo"})
+			breaker.changeStateTo(internalThrottled)
+			snap := breaker.Snapshot()
+			if snap.Name != "foo" {
+				t.Fatal("snapshot is not capturing breaker name")
+			}
+			if snap.String() != "throttled" {
+				t.Fatalf("the stringer for snap returned wrong value: %s", snap.String())
+			}
+			if snap.State != Throttled {
+				t.Fatal("state should be Throttled")
+			}
+			if snap.ClosedSince != nil {
+				t.Fatal("the ClosedSince property should not be set")
+			}
+			if snap.Throttled == nil {
+				t.Fatal("the Throttled property should not be nil")
+			}
+			if snap.BackOffEnds == nil {
+				t.Fatal("the BackOffEnds property should not be nil")
+			}
+			if snap.Opened != nil {
+				t.Fatal("the Opened property should not be set")
+			}
+			if snap.LockoutEnds != nil {
+				t.Fatal("the LockoutEnds property should not be set")
+			}
+		})
+
+		t.Run("open breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{Name: "foo", LockOut: time.Second})
+			breaker.changeStateTo(internalOpen)
+			snap := breaker.Snapshot()
+			if snap.Name != "foo" {
+				t.Fatal("snapshot is not capturing breaker name")
+			}
+			if snap.String() != "open" {
+				t.Fatalf("the stringer for snap returned wrong value: %s", snap.String())
+			}
+			if snap.State != Open {
+				t.Fatal("state should be Open")
+			}
+			if snap.ClosedSince != nil {
+				t.Fatal("the ClosedSince property should not be set")
+			}
+			if snap.Throttled != nil {
+				t.Fatal("the Throttled property should not be set")
+			}
+			if snap.BackOffEnds != nil {
+				t.Fatal("the BackOffEnds property should not be set")
+			}
+			if snap.Opened == nil {
+				t.Fatal("the Opened property should not be nil")
+			}
+			if snap.LockoutEnds == nil {
+				t.Fatal("the LockoutEnds property should not be nil")
+			}
+		})
+	})
+
+	t.Run("size", func(t *testing.T) {
+		t.Parallel()
+		t.Run("new breaker", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{})
+			if sz := breaker.Size(); sz != 0 {
+				t.Fatal("a new breaker should have size 0")
+			}
+		})
+
+		t.Run("three errors", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{})
+			breaker.tracker.incr()
+			breaker.tracker.incr()
+			breaker.tracker.incr()
+			time.Sleep(time.Millisecond)
+			if sz := breaker.Size(); sz != 3 {
+				t.Fatal("breaker should be size 3")
+			}
+		})
+	})
+
+	t.Run("edge cases for Run", func(t *testing.T) {
+		t.Parallel()
+		t.Run("breaker times out", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{
+				Timeout: 10 * time.Millisecond,
+			})
+
+			_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				time.Sleep(20 * time.Millisecond)
+				return true, nil
+			})
+
+			if !errors.Is(err, TimeoutError) {
+				t.Fatal("the circuit breaker should have timed out")
+			}
+		})
+
+		t.Run("canceled context propagation", func(t *testing.T) {
+			t.Parallel()
+			t.Run("default behavior", func(t *testing.T) {
+				t.Parallel()
+				breaker := NewBreaker(BreakerOptions{
+					Timeout: 10 * time.Millisecond,
+				})
+				var tick uint32
+				_, _ = breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+					time.Sleep(20 * time.Millisecond)
+					if ctx.Err() != nil {
+						atomic.AddUint32(&tick, 1)
+						return true, nil
+					}
+					atomic.AddUint32(&tick, 2)
+					return true, nil
+				})
+
+				time.Sleep(30 * time.Millisecond)
+				t.Log("tick", tick)
+				if tick != 1 {
+					t.Fatal("context error didnt propagate")
+				}
+			})
+
+			t.Run("no propagation ", func(t *testing.T) {
+				t.Parallel()
+				breaker := NewBreaker(BreakerOptions{
+					Timeout:       10 * time.Millisecond,
+					IgnoreContext: true,
+				})
+				var tick uint32
+				_, _ = breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+					time.Sleep(20 * time.Millisecond)
+					if ctx.Err() != nil {
+						atomic.AddUint32(&tick, 1)
+						return true, nil
+					}
+					atomic.AddUint32(&tick, 2)
+					return true, nil
+				})
+
+				time.Sleep(30 * time.Millisecond)
+				t.Log("tick", tick)
+				if tick != 2 {
+					t.Fatal("context error didnt propagate")
+				}
+			})
+		})
+
+		t.Run("improperly initialized", func(t *testing.T) {
+			t.Parallel()
+			breaker := Breaker{}
+			_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return true, nil
+			})
+			if !errors.Is(err, NotInitializedError) {
+				t.Fatal("expected the improper initialization error")
+			}
+		})
+
+		t.Run("unfit because open", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{LockOut: time.Second})
+			breaker.changeStateTo(internalOpen)
+			_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return true, nil
+			})
+
+			if !errors.Is(err, StateOpenError) {
+				t.Fatal("fitness chack failed")
+			}
+		})
+
+		t.Run("unfit because throttled", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{
+				BackOff: minimumBackoff,
+				InterpolationFunc: func(int) uint32 {
+					return 100
+				},
+			})
+			breaker.changeStateTo(internalThrottled)
+			_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
+				return true, nil
+			})
+
+			if !errors.Is(err, StateThrottledError) {
+				t.Fatal("fitness check failed")
+			}
+		})
+
+		t.Run("unfit because context canceled", func(t *testing.T) {
+			t.Parallel()
+			breaker := NewBreaker(BreakerOptions{})
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := breaker.Run(ctx, func(ctx context.Context) (interface{}, error) {
+				return true, nil
+			})
+
+			if !errors.Is(err, context.Canceled) {
+				t.Fatal("fitness check failed")
+			}
+		})
 
 	})
 }

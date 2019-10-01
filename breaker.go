@@ -138,6 +138,7 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		lockout:        opts.LockOut,
 		interpolate:    opts.InterpolationFunc,
 		openingResets:  opts.OpeningWillResetErrors,
+		ignoreContext:  opts.IgnoreContext,
 		preprocessors:  opts.PreProcessors,
 		postprocessors: opts.PostProcessors,
 	}
