@@ -50,7 +50,7 @@ func main() {
 		LockOut:                5 * time.Second,
 		BackOff:                20 * time.Second,
 		OpeningWillResetErrors: true,
-		InterpolationFunc:      circuit.EaseInOut,
+		EstimationFunc:         circuit.EaseInOut,
 		//PostProcessors:         []circuit.PostProcessor{pp},
 	})
 

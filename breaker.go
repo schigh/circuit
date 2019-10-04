@@ -72,10 +72,10 @@ type BreakerOptions struct {
 	// a unique name will be created based on the caller to NewBreaker.
 	Name string
 
-	// InterpolationFunc is the function used to determine
+	// EstimationFunc is the function used to determine
 	// the chance of a request being throttled during the
-	// backoff period.  By default, Linear interpolation is used.
-	InterpolationFunc InterpolationFunc
+	// backoff period.  By default, Linear estimation is used.
+	EstimationFunc EstimationFunc
 
 	// PreProcessors are functions that execute in order before
 	// the Runner function is executed.  If a preprocessor
@@ -120,9 +120,9 @@ type Breaker struct {
 	window   time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
 
 	// misc
-	stateMX     sync.Mutex        // Mutex around state change
-	tracker     errTracker        // Error tracker
-	interpolate InterpolationFunc // Function used to interpolate throttling chance
+	stateMX  sync.Mutex     // Mutex around state change
+	tracker  errTracker     // Error tracker
+	estimate EstimationFunc // Function used to estimate throttling chance
 
 	// orchestration
 	currThrottles []chan struct{} // Signaling channels to stop throttle backoff
@@ -147,7 +147,7 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		window:         opts.Window,
 		threshold:      opts.Threshold,
 		lockout:        opts.LockOut,
-		interpolate:    opts.InterpolationFunc,
+		estimate:       opts.EstimationFunc,
 		openingResets:  opts.OpeningWillResetErrors,
 		ignoreContext:  opts.IgnoreContext,
 		preprocessors:  opts.PreProcessors,
@@ -188,8 +188,8 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 	if b.window < minimumWindow {
 		b.window = minimumWindow
 	}
-	if b.interpolate == nil {
-		b.interpolate = Linear
+	if b.estimate == nil {
+		b.estimate = Linear
 	}
 
 	b.stateChange = make(chan BreakerState, 1)
@@ -289,10 +289,10 @@ func (b *Breaker) setThrottled(is bool) {
 		for {
 			select {
 			case <-t.C:
-				// Here we run the interpolation function a maximum of
+				// Here we run the estimation function a maximum of
 				// 100 times.  If the circuit breaker goes from throttled
 				// to open, this ticker is stopped elsewhere.
-				atomic.SwapUint32(&b.throttleChance, b.interpolate(i))
+				atomic.SwapUint32(&b.throttleChance, b.estimate(i))
 				if i >= 100 {
 					// The backoff has completed without reopening the
 					// circuit breaker.  Here we will close the circuit breaker.

@@ -8,15 +8,15 @@ These curves were generated using gonum.org/v1/plot/tools/bezier
 Forgive the terrible ASCII charts in this file
 */
 
-// InterpolationFunc takes in a number within range [1 - 100] and returns a probability that a
+// EstimationFunc takes in a number within range [1 - 100] and returns a probability that a
 // request should be blocked based on that number.
 // The periodicity of this function is directly proportional to the backoff duration of the
 // circuit breaker, where frequency = backoff duration / 100
-// The interpolation function will be called exactly 100 times during the backoff period, unless
+// The estimation function will be called exactly 100 times during the backoff period, unless
 // the circuit breaker reopens.  All backoff periods start by interpolating 1 and increasing
 // towards 100
 //
-type InterpolationFunc func(int) uint32
+type EstimationFunc func(int) uint32
 
 var logCurve = []uint32{
 	100, 99, 99, 99, 99, 99, 99, 99, 99, 99,

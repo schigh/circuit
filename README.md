@@ -1,8 +1,10 @@
 ![circuit](_img/logo.png)
 
+A highly-tunable circuit breaker
+
 badges
 
-description
+Circuit implements the [circuit breaker](https://www.martinfowler.com/bliki/CircuitBreaker.html) design pattern in Go.
 
 <!-- toc -->
 - [Usage](#usage)
@@ -12,10 +14,10 @@ description
 - [Transition States](#transition-states)
 - [LockOut](#lockout)
 - [Backoff Strategy](#backoff-strategy)
-  - [Linear interpolation (default)](#linear-interpolation-default)
-  - [Logarithmic interpolation](#logarithmic-interpolation)
-  - [Exponential interpolation](#exponential-interpolation)
-  - [Ease-In-Out interpolation](#ease-in-out-interpolation)
+  - [Linear estimation (default)](#linear-estimation-default)
+  - [Logarithmic estimation](#logarithmic-estimation)
+  - [Exponential estimation](#exponential-estimation)
+  - [Ease-In-Out estimation](#ease-in-out-estimation)
 - [Capturing circuit breaker state changes](#capturing-circuit-breaker-state-changes)
   - [`BreakerState`](#breakerstate)
 - [Reading circuit breaker state](#reading-circuit-breaker-state)
@@ -93,10 +95,10 @@ type BreakerOptions struct {
     // propagate to any in-flight Run functions.
     IgnoreContext bool
 
-    // InterpolationFunc is the function used to determine
+    // EstimationFunc is the function used to determine
     // the chance of a request being throttled during the
-    // backoff period.  By default, Linear interpolation is used.
-    InterpolationFunc InterpolationFunc
+    // backoff period.  By default, Linear estimation is used.
+    EstimationFunc EstimationFunc
 
     // PreProcessors are functions that execute in order before
     // the Runner function is executed.  If a preprocessor
@@ -120,7 +122,7 @@ breaker := circuit.NewBreaker(circuit.BreakerOptions{
     BackOff:           time.Minute,
     Window:            time.Minute,
     LockOut:           5 * time.Second,
-    InterpolationFunc: circuit.Exponential,
+    EstimationFunc: circuit.Exponential,
 })
 ```
 
@@ -145,7 +147,7 @@ breaker := circuit.NewBreaker(circuit.BreakerOptions{
     BackOff:           time.Minute,
     Window:            time.Minute,
     LockOut:           5 * time.Second,
-    InterpolationFunc: circuit.Exponential,
+    EstimationFunc: circuit.Exponential,
 })
 
 // ...
@@ -266,44 +268,44 @@ when the circuit breaker opens.
 
 ### Backoff Strategy
 
-When the circuit breaker enters the throttled state, it uses an interpolation function
+When the circuit breaker enters the throttled state, it uses an estimation function
 to determine how frequently it will allow subsequent calls to `Run` to be executed.
 By default, the circuit breaker uses the `circuit.Linear` backoff strategy.
 
 The backoff strategy works by dividing the backoff duration into 100 units.  For
-each of those units `i in [1...100]`, the interpolation function returns a probability
+each of those units `i in [1...100]`, the estimation function returns a probability
 score for `i` such that any call to `Run`will return a `circuit.StateThrottledError`.
-If the interpolation function returns 100, **all** calls to `Run` return a throttling
-error.  If the interpolation function returns 0, **no** calls to `Run` return a
+If the estimation function returns 100, **all** calls to `Run` return a throttling
+error.  If the estimation function returns 0, **no** calls to `Run` return a
 throttling error.
 
-#### Linear interpolation (default)
+#### Linear estimation (default)
 
-![Linear interpolation](_img/linear.png)
+![Linear estimation](_img/linear.png)
 
-Linear interpolation returns a probability inversely proportional to `i`.
-A circuit breaker will default to linear interpolation if an interpolation function
+Linear estimation returns a probability inversely proportional to `i`.
+A circuit breaker will default to linear estimation if an estimation function
 is not provided in `BreakerOptions`.
 
-#### Logarithmic interpolation
+#### Logarithmic estimation
 
-![Logarithmic interpolation](_img/logarithmic.png)
+![Logarithmic estimation](_img/logarithmic.png)
 
-Logarithmic interpolation initially returns a high probability, and quickly decreases
+Logarithmic estimation initially returns a high probability, and quickly decreases
 after half of the backoff duration has elapsed.
 
-#### Exponential interpolation
+#### Exponential estimation
 
-![Exponential interpolation](_img/exponential.png)
+![Exponential estimation](_img/exponential.png)
 
-Exponential interpolation will initially decrease probability rapidly and eases
+Exponential estimation will initially decrease probability rapidly and eases
 up after half of the backoff duration has elapsed.
 
-#### Ease-In-Out interpolation
+#### Ease-In-Out estimation
 
-![Ease-In-Out interpolation](_img/easeinout.png)
+![Ease-In-Out estimation](_img/easeinout.png)
 
-Ease-In-Out interpolation will initially return a higher probability and quickly
+Ease-In-Out estimation will initially return a higher probability and quickly
 decrease as the backoff duration approaches its midpoint.  The rate of decrease
 will slow down shortly after the backoff midpoint has elapsed.
 

@@ -56,13 +56,13 @@ func TestBreaker(t *testing.T) {
 				t.Fatalf("expected default window, got %v", breaker.window)
 			}
 
-			// interpolate
-			if breaker.interpolate == nil {
-				t.Fatalf("interpolation func cannot be nil")
+			// estimate
+			if breaker.estimate == nil {
+				t.Fatalf("estimation func cannot be nil")
 			}
 			for i := 1; i < 100; i++ {
-				if breaker.interpolate(i) != uint32(100-i) {
-					t.Fatalf("linear interpolation was expected")
+				if breaker.estimate(i) != uint32(100-i) {
+					t.Fatalf("linear estimation was expected")
 				}
 			}
 		})
@@ -177,12 +177,12 @@ func TestBreaker(t *testing.T) {
 			}
 		})
 
-		t.Run("calls to interpolation", func(t *testing.T) {
+		t.Run("calls to estimation", func(t *testing.T) {
 			t.Parallel()
 			var count uint32
 			breaker := NewBreaker(BreakerOptions{
 				BackOff: minimumBackoff,
-				InterpolationFunc: func(int) uint32 {
+				EstimationFunc: func(int) uint32 {
 					atomic.AddUint32(&count, 1)
 					return 0
 				},
@@ -192,16 +192,16 @@ func TestBreaker(t *testing.T) {
 			time.Sleep(1100 * time.Millisecond)
 
 			if atomic.LoadUint32(&count) != 100 {
-				t.Fatalf("expected the interpolation func to run 100 times.  It ran %d times", count)
+				t.Fatalf("expected the estimation func to run 100 times.  It ran %d times", count)
 			}
 		})
 
-		t.Run("cancelling interpolation", func(t *testing.T) {
+		t.Run("cancelling estimation", func(t *testing.T) {
 			t.Parallel()
 			var count uint32
 			breaker := NewBreaker(BreakerOptions{
 				BackOff: minimumBackoff,
-				InterpolationFunc: func(int) uint32 {
+				EstimationFunc: func(int) uint32 {
 					atomic.AddUint32(&count, 1)
 					return 0
 				},
@@ -214,7 +214,7 @@ func TestBreaker(t *testing.T) {
 
 			t.Log("count", count)
 			if count > 50 {
-				t.Fatalf("expected the interpolation func to cancel half way through.  It ran %d times", count)
+				t.Fatalf("expected the estimation func to cancel half way through.  It ran %d times", count)
 			}
 		})
 	})
@@ -322,7 +322,7 @@ func TestBreaker(t *testing.T) {
 			breaker := NewBreaker(BreakerOptions{
 				LockOut: time.Second,
 				BackOff: minimumBackoff,
-				InterpolationFunc: func(int) uint32 {
+				EstimationFunc: func(int) uint32 {
 					atomic.AddUint32(&count, 1)
 					return 0
 				},
@@ -669,7 +669,7 @@ func TestBreaker(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{
 				BackOff: minimumBackoff,
-				InterpolationFunc: func(int) uint32 {
+				EstimationFunc: func(int) uint32 {
 					return 100
 				},
 			})
@@ -916,7 +916,7 @@ func TestBreaker(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{
 				BackOff: minimumBackoff,
-				InterpolationFunc: func(int) uint32 {
+				EstimationFunc: func(int) uint32 {
 					return 100
 				},
 			})

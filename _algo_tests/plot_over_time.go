@@ -38,7 +38,7 @@ func main() {
 	runlength := time.Duration(minutes) * time.Minute
 	clock := time.NewTimer(runlength)
 
-	algos := map[string]circuit.InterpolationFunc{
+	algos := map[string]circuit.EstimationFunc{
 		"linear":      circuit.Linear,
 		"logarithmic": circuit.Logarithmic,
 		"exponential": circuit.Exponential,
@@ -59,13 +59,13 @@ func main() {
 	for k, f := range algos {
 		breakerNames = append(breakerNames, k)
 		box.LoadOrCreate(circuit.BreakerOptions{
-			Name:              k,
-			Timeout:           10 * time.Millisecond,
-			BackOff:           time.Minute,
-			Window:            time.Minute,
-			Threshold:         2,
-			LockOut:           5 * time.Second,
-			InterpolationFunc: f,
+			Name:           k,
+			Timeout:        10 * time.Millisecond,
+			BackOff:        time.Minute,
+			Window:         time.Minute,
+			Threshold:      2,
+			LockOut:        5 * time.Second,
+			EstimationFunc: f,
 		})
 	}
 
