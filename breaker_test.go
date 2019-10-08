@@ -13,17 +13,6 @@ import (
 
 func TestBreaker(t *testing.T) {
 	t.Parallel()
-	//var saneOptions = func() BreakerOptions {
-	//	return BreakerOptions{
-	//		Name:      "testCB",
-	//		Timeout:   time.Second,
-	//		BackOff:   5 * time.Second,
-	//		Window:    30 * time.Second,
-	//		Threshold: 2,
-	//		LockOut:   2 * time.Second,
-	//	}
-	//}
-
 	t.Run("NewBreaker", func(t *testing.T) {
 		t.Parallel()
 		t.Run("defaults", func(t *testing.T) {
@@ -99,7 +88,7 @@ func TestBreaker(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{})
 
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 			if !lockedSince.IsZero() || isLocked {
 				t.Fatalf("the lock status of a new breaker is incorrect")
 			}
@@ -110,36 +99,42 @@ func TestBreaker(t *testing.T) {
 			breaker := NewBreaker(BreakerOptions{
 				LockOut: time.Second,
 			})
-			breaker.setLocked(true)
+			breaker.setOpen(true)
 
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 			if lockedSince.IsZero() || !isLocked {
 				t.Fatalf("the circuit breaker should be locked")
 			}
 
 			time.Sleep(1100 * time.Millisecond)
-			lockedSince, isLocked = breaker.lockStatus()
+			_, lockedSince, _, isLocked = breaker.openAndLockedStatus()
 			if !lockedSince.IsZero() || isLocked {
 				t.Fatalf("the breaker should have unlocked")
 			}
 		})
 
-		t.Run("manual unlock", func(t *testing.T) {
+		t.Run("set open to false", func(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{
 				LockOut: time.Second,
 			})
 
-			breaker.setLocked(true)
-			lockedSince, isLocked := breaker.lockStatus()
+			breaker.setOpen(true)
+			openSince, lockedSince, isOpen, isLocked := breaker.openAndLockedStatus()
+			if openSince.IsZero() || !isOpen {
+				t.Fatalf("the circuit breaker should be open")
+			}
 			if lockedSince.IsZero() || !isLocked {
 				t.Fatalf("the circuit breaker should be locked")
 			}
 
-			breaker.setLocked(false)
-			lockedSince, isLocked = breaker.lockStatus()
-			if !lockedSince.IsZero() || isLocked {
-				t.Fatalf("the breaker should have unlocked immediately")
+			breaker.setOpen(false)
+			openSince, lockedSince, isOpen, isLocked = breaker.openAndLockedStatus()
+			if !openSince.IsZero() || isOpen {
+				t.Fatalf("the circuit breaker should not be open")
+			}
+			if lockedSince.IsZero() || !isLocked {
+				t.Fatalf("the breaker should still be locked")
 			}
 		})
 	})
@@ -160,7 +155,7 @@ func TestBreaker(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{BackOff: minimumBackoff})
 
-			breaker.setThrottled(true)
+			breaker.changeStateTo(internalThrottled)
 
 			throttledSince, isThrottled := breaker.throttledStatus()
 			if throttledSince.IsZero() || !isThrottled {
@@ -168,7 +163,7 @@ func TestBreaker(t *testing.T) {
 			}
 
 			time.Sleep(1100 * time.Millisecond)
-			throttledSince, isThrottled = breaker.lockStatus()
+			throttledSince, isThrottled = breaker.throttledStatus()
 			if !throttledSince.IsZero() || isThrottled {
 				t.Fatalf("the breaker should not be throttled")
 			}
@@ -212,7 +207,7 @@ func TestBreaker(t *testing.T) {
 			breaker.setThrottled(false)
 			time.Sleep(600 * time.Millisecond)
 
-			t.Log("count", count)
+			t.Log("count", atomic.LoadUint32(&count))
 			if count > 50 {
 				t.Fatalf("expected the estimation func to cancel half way through.  It ran %d times", count)
 			}
@@ -259,7 +254,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -282,7 +277,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -295,7 +290,7 @@ func TestBreaker(t *testing.T) {
 			}
 		})
 
-		t.Run("open to throttled explicitly", func(t *testing.T) {
+		t.Run("open to any other state keeps lock", func(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{LockOut: time.Second})
 			breaker.changeStateTo(internalOpen)
@@ -303,16 +298,19 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			openSince, lockedSince, isOpen, isLocked := breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
 			}
+			if !openSince.IsZero() || isOpen {
+				t.Fatalf("the circuit breaker should not be open")
+			}
 			if throttledSince.IsZero() || !isThrottled {
 				t.Fatalf("the circuit breaker should be throttled")
 			}
-			if !lockedSince.IsZero() || isLocked {
-				t.Fatalf("the circuit breaker should not be locked")
+			if lockedSince.IsZero() || !isLocked {
+				t.Fatalf("the circuit breaker should be locked")
 			}
 		})
 
@@ -334,7 +332,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -364,7 +362,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if closedSince.IsZero() || !isClosed {
 				t.Fatalf("the circuit breaker should be closed")
@@ -418,7 +416,7 @@ func TestBreaker(t *testing.T) {
 			breaker := NewBreaker(BreakerOptions{LockOut: time.Second, BackOff: minimumBackoff})
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if closedSince.IsZero() || !isClosed {
 				t.Fatalf("the circuit breaker should be closed")
@@ -435,7 +433,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed = breaker.closedStatus()
 			throttledSince, isThrottled = breaker.throttledStatus()
-			lockedSince, isLocked = breaker.lockStatus()
+			_, lockedSince, _, isLocked = breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -455,7 +453,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -472,7 +470,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed = breaker.closedStatus()
 			throttledSince, isThrottled = breaker.throttledStatus()
-			lockedSince, isLocked = breaker.lockStatus()
+			_, lockedSince, _, isLocked = breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -492,7 +490,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed := breaker.closedStatus()
 			throttledSince, isThrottled := breaker.throttledStatus()
-			lockedSince, isLocked := breaker.lockStatus()
+			_, lockedSince, _, isLocked := breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -509,7 +507,7 @@ func TestBreaker(t *testing.T) {
 
 			closedSince, isClosed = breaker.closedStatus()
 			throttledSince, isThrottled = breaker.throttledStatus()
-			lockedSince, isLocked = breaker.lockStatus()
+			_, lockedSince, _, isLocked = breaker.openAndLockedStatus()
 
 			if !closedSince.IsZero() || isClosed {
 				t.Fatalf("the circuit breaker should not be closed")
@@ -693,7 +691,7 @@ func TestBreaker(t *testing.T) {
 		t.Run("unknown state (PEBKAC edge case)", func(t *testing.T) {
 			t.Parallel()
 			breaker := NewBreaker(BreakerOptions{})
-			breaker.state = uint32(100)
+			atomic.SwapUint32(&breaker.state, 100)
 			err := breaker.checkFitness(context.Background())
 
 			if !errors.Is(err, StateUnknownError) {

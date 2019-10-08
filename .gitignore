@@ -1,5 +1,6 @@
 .idea
 .vscode
-#sandbox
 *.csv
 /_assets/
+/_sandbox/
+.DS_Store

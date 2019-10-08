@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -14,29 +15,13 @@ import (
 	"github.com/schigh/circuit"
 )
 
+var (
+	frontErrors uint
+)
+
 func main() {
-	//fp, err := os.Create(fmt.Sprintf("%d.csv", time.Now().UnixNano()))
-	//csvData := [][]string{
-	//	{"ts", "errors", "state", "began", "ends"},
-	//}
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	//defer fp.Close()
-
-	//fn := time.Now().Unix()
-	//cp, _ := os.Create(fmt.Sprintf("cpu.%d.prof", fn))
-	//mp, _ := os.Create(fmt.Sprintf("mem.%d.prof", fn))
-	//defer cp.Close()
-	//defer mp.Close()
-
-	//runtime.GC()
-	//defer pprof.WriteHeapProfile(mp)
-	//pprof.StartCPUProfile(cp)
-	//defer pprof.StopCPUProfile()
-
-	//stopChan := make(chan os.Signal, 1)
-	//signal.Notify(stopChan, syscall.SIGTERM, syscall.SIGINT)
+	flag.UintVar(&frontErrors, "front", 0, "front-loaded errors")
+	flag.Parse()
 
 	execTimer := time.NewTimer(10 * time.Minute)
 
@@ -48,7 +33,7 @@ func main() {
 		Window:                 30 * time.Second,
 		Threshold:              3,
 		LockOut:                5 * time.Second,
-		BackOff:                20 * time.Second,
+		BackOff:                5 * time.Second,
 		OpeningWillResetErrors: true,
 		EstimationFunc:         circuit.EaseInOut,
 		//PostProcessors:         []circuit.PostProcessor{pp},
@@ -67,54 +52,6 @@ func main() {
 
 	done := uint32(0)
 	start := time.Now()
-	//mx := sync.Mutex{}
-	//go func(b *circuit.Breaker, done *uint32, csvData *[][]string, start *time.Time) {
-	//	for {
-	//		if atomic.LoadUint32(done) == 1 {
-	//			return
-	//		}
-	//		time.Sleep(time.Second)
-	//		now := time.Now()
-	//		snap := b.Snapshot()
-	//		// {"ts", "errors", "state", "began", "ends"},
-	//		s := make([]string, 5)
-	//		s[0] = now.Format(time.RFC3339)
-	//		s[1] = strconv.Itoa(b.Size())
-	//		s[2] = strconv.Itoa(int(snap.State))
-	//		switch snap.State {
-	//		case circuit.Closed:
-	//			if snap.ClosedSince != nil {
-	//				s[3] = snap.ClosedSince.Format(time.RFC3339)
-	//			}
-	//		case circuit.Throttled:
-	//			if snap.Throttled != nil {
-	//				s[3] = snap.Throttled.Format(time.RFC3339)
-	//			}
-	//			if snap.BackOffEnds != nil {
-	//				s[4] = snap.BackOffEnds.Format(time.RFC3339)
-	//			}
-	//		case circuit.Open:
-	//			if snap.Opened != nil {
-	//				s[3] = snap.Opened.Format(time.RFC3339)
-	//			}
-	//			if snap.LockoutEnds != nil {
-	//				s[4] = snap.LockoutEnds.Format(time.RFC3339)
-	//			}
-	//		}
-	//		mx.Lock()
-	//		*csvData = append(*csvData, s)
-	//		mx.Unlock()
-	//
-	//		fmt.Printf("\n%v\n", now.Sub(*start))
-	//
-	//		//data, _ := json.MarshalIndent(&snap, "", "  ")
-	//		//_, _ = fmt.Printf("\n%s\n", time.Now().Format("15:04:05"))
-	//		//_, _ = fmt.Printf("errors: %d\n", b.Size())
-	//		//_, _ = fmt.Println(string(data))
-	//		//d := time.Now().Sub(*refTime)
-	//		//_, _ = fmt.Fprintf(os.Stderr, "%v: size: %d, state: %v\n", d, b.Size(), b.State())
-	//	}
-	//}(b, &done, &csvData, &start)
 
 	f1 := func(context.Context) (interface{}, error) {
 		return nil, nil
@@ -134,10 +71,14 @@ func main() {
 		f1, f1, f1, f1, f1, f1, f1, f1, f1, f1,
 		f1, f1, f1, f1, f1, f1, f1, f1, f1, f1,
 		f1, f1, f1, f1, f1, f1, f1, f1, f1, f1,
-		f1, f1, f1, f1, f1, f1, f2, f2, f2, f2,
+		f1, f1, f1, f1, f1, f1, f1, f1, f1, f2,
 	}
 
 	rand.Seed(start.UnixNano())
+
+	for i := 0; i < int(frontErrors); i++ {
+		_, _ = b.Run(context.Background(), f2)
+	}
 
 	go func(b *circuit.Breaker, done *uint32, refTime *time.Time, funcs []func(context.Context) (interface{}, error)) {
 		tick := 1

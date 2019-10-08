@@ -105,9 +105,10 @@ type Breaker struct {
 	throttleChance uint32 // Chance of a request being throttled during backoff
 
 	// event timestamps
-	lockCreated     int64 // Unix nano timestamp of lock creation time
-	throttleCreated int64 // Unix nano timestamp of throttle creation time
-	closedSince     int64 // Unix nano timestamp of last closed time (or creation)
+	lockedSince    int64 // Unix nano timestamp of current lock creation
+	openSince      int64 // Unix nano timestamp of current open state creation
+	throttledSince int64 // Unix nano timestamp of current throttled state creation
+	closedSince    int64 // Unix nano timestamp of last closed time (or creation)
 
 	// name
 	name string // Circuit Breaker name
@@ -217,67 +218,81 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 }
 
 // get the lock status
-func (b *Breaker) lockStatus() (time.Time, bool) {
-	l := atomic.LoadInt64(&b.lockCreated)
-	if l == 0 {
-		return time.Time{}, false
+func (b *Breaker) openAndLockedStatus() (openedAt time.Time, lockedAt time.Time, isOpen bool, isLocked bool) {
+	o := atomic.LoadInt64(&b.openSince)
+	if o != 0 {
+		openedAt = timeFromNS(o)
+		isOpen = true
 	}
-	return timeFromNS(l), true
+	l := atomic.LoadInt64(&b.lockedSince)
+	if l != 0 {
+		lockedAt = timeFromNS(l)
+		isLocked = true
+	}
+	return
 }
 
 // open the circuit breaker and lock it out if enabled
-func (b *Breaker) setLocked(is bool) {
+func (b *Breaker) setOpen(is bool) {
 	// if resetting the counter is enabled, it is done regardless of lockout
 	b.tracker.reset(is && b.openingResets)
 
+	// setting open to false
+	if !is {
+		atomic.SwapInt64(&b.openSince, 0)
+		return
+	}
+
+	nowNano := time.Now().UnixNano()
+	atomic.SwapInt64(&b.openSince, nowNano)
+
+	// return if no lockout
 	if b.lockout == 0 {
 		return
 	}
+	// set the most recent lock
+	atomic.SwapInt64(&b.lockedSince, nowNano)
 
-	// setting open to false
-	if !is {
-		atomic.SwapInt64(&b.lockCreated, 0)
-		return
-	}
-
-	// setting true, start a new unlocker
-	nowNano := time.Now().UnixNano()
-	atomic.SwapInt64(&b.lockCreated, nowNano)
-
+	// we only unlock if the current lock identifier
+	// (unix nano timestamp) matches the latest lock...if there was a
+	// previous lock that's been overridden, it wont affect the lock state
 	go func(b *Breaker, lockID int64) {
 		t := time.NewTimer(b.lockout)
 		<-t.C
-		atomic.CompareAndSwapInt64(&b.lockCreated, lockID, 0)
+		atomic.CompareAndSwapInt64(&b.lockedSince, lockID, 0)
 	}(b, nowNano)
 }
 
 // get the throttle status
 func (b *Breaker) throttledStatus() (time.Time, bool) {
-	l := atomic.LoadInt64(&b.throttleCreated)
+	l := atomic.LoadInt64(&b.throttledSince)
 	if l == 0 {
 		return time.Time{}, false
 	}
 	return timeFromNS(l), true
 }
 
+func (b *Breaker) deThrottle() {
+	atomic.SwapInt64(&b.throttledSince, 0)
+	atomic.SwapUint32(&b.throttleChance, 0)
+
+	// cancelChan any existing backoff timers
+	for i := range b.currThrottles {
+		b.currThrottles[i] <- struct{}{}
+	}
+
+	// discard backoff
+	b.currThrottles = []chan struct{}(nil)
+}
+
 // make throttled
 func (b *Breaker) setThrottled(is bool) {
 	if !is {
-		atomic.SwapInt64(&b.throttleCreated, 0)
-		atomic.SwapUint32(&b.throttleChance, 0)
-
-		// cancelChan any existing backoff timers
-		for i := range b.currThrottles {
-			b.currThrottles[i] <- struct{}{}
-		}
-
-		// discard backoff
-		b.currThrottles = []chan struct{}(nil)
+		b.deThrottle()
 		return
 	}
 
-	nowNano := time.Now().UnixNano()
-	atomic.SwapInt64(&b.throttleCreated, nowNano)
+	atomic.SwapInt64(&b.throttledSince, time.Now().UnixNano())
 	atomic.SwapUint32(&b.throttleChance, 100)
 
 	cancelChan := make(chan struct{}, 1)
@@ -297,7 +312,7 @@ func (b *Breaker) setThrottled(is bool) {
 					// The backoff has completed without reopening the
 					// circuit breaker.  Here we will close the circuit breaker.
 					t.Stop()
-					b.changeStateTo(internalClosed)
+					go b.changeStateTo(internalClosed)
 					return
 				}
 				i++
@@ -348,7 +363,7 @@ func (b *Breaker) changeStateTo(to uint32) {
 
 	switch from {
 	case internalOpen:
-		b.setLocked(false)
+		b.setOpen(false)
 	case internalThrottled:
 		b.setThrottled(false)
 	case internalClosed:
@@ -357,11 +372,13 @@ func (b *Breaker) changeStateTo(to uint32) {
 
 	switch to {
 	case internalOpen:
-		b.setLocked(true)
-		ts, locked := b.lockStatus()
-		if locked {
-			newState.Opened = &ts
-			end := ts.Add(b.lockout)
+		b.setOpen(true)
+		openedAt, lockedAt, isOpen, isLocked := b.openAndLockedStatus()
+		if isOpen {
+			newState.Opened = &openedAt
+		}
+		if isLocked {
+			end := lockedAt.Add(b.lockout)
 			newState.LockoutEnds = &end
 		}
 	case internalThrottled:
@@ -402,7 +419,7 @@ func (b *Breaker) calc() {
 		}
 	case internalOpen:
 		// we're locked, nothing to do
-		if _, locked := b.lockStatus(); locked {
+		if lockedAt := atomic.LoadInt64(&b.lockedSince); lockedAt != 0 {
 			return
 		}
 		// error density needs to decay a bit more
@@ -566,9 +583,12 @@ func (b *Breaker) Snapshot() BreakerState {
 			bs.BackOffEnds = &ends
 		}
 	case Open:
-		if since, ok := b.lockStatus(); ok {
-			bs.Opened = &since
-			ends := since.Add(b.lockout)
+		openedAt, lockedAt, isOpen, isLocked := b.openAndLockedStatus()
+		if isOpen {
+			bs.Opened = &openedAt
+		}
+		if isLocked {
+			ends := lockedAt.Add(b.lockout)
 			bs.LockoutEnds = &ends
 		}
 	}

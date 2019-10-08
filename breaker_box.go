@@ -3,7 +3,7 @@ package circuit
 import "sync"
 
 type BreakerBox struct {
-	breakers    breakerMap
+	breakers    sync.Map
 	stateChange chan BreakerState
 	funnel      chan BreakerState
 }
@@ -11,10 +11,6 @@ type BreakerBox struct {
 // NewBreakerBox will return a BreakerBox with all internals properly configured.
 // Use this function at all times when creating a new instance.
 func NewBreakerBox() *BreakerBox {
-	breakerMap := breakerMap{
-		mx:   &sync.RWMutex{},
-		impl: make(map[string]*Breaker),
-	}
 	stateChange := make(chan BreakerState, 5)
 	funnel := make(chan BreakerState)
 
@@ -32,7 +28,7 @@ func NewBreakerBox() *BreakerBox {
 	}(stateChange, funnel)
 
 	return &BreakerBox{
-		breakers:    breakerMap,
+		breakers:    sync.Map{},
 		stateChange: stateChange,
 		funnel:      funnel,
 	}
@@ -45,13 +41,17 @@ func (bb *BreakerBox) StateChange() <-chan BreakerState {
 
 // Load will fetch a circuit breaker by name if it exists
 func (bb *BreakerBox) Load(name string) *Breaker {
-	return bb.breakers.get(name)
+	b, ok := bb.breakers.Load(name)
+	if !ok {
+		return nil
+	}
+	return b.(*Breaker)
 }
 
 // AddBYO will add a Breaker to the box, but the breaker's state changes
 // will not be funneled to the box's state change output
 func (bb *BreakerBox) AddBYO(b *Breaker) {
-	bb.breakers.set(b.name, b)
+	bb.breakers.Store(b.name, b)
 }
 
 // Create will generate a new circuit breaker with the supplied options and return it.
@@ -69,7 +69,7 @@ func (bb *BreakerBox) Create(opts BreakerOptions) (*Breaker, error) {
 			}
 		}
 	}(b, bb)
-	bb.breakers.set(b.name, b)
+	bb.breakers.Store(b.name, b)
 
 	return b, nil
 }
@@ -77,8 +77,10 @@ func (bb *BreakerBox) Create(opts BreakerOptions) (*Breaker, error) {
 // LoadOrCreate will attempt to load a circuit breaker by name.  If the breaker doesnt exist, a
 // new one with the supplied options will be created and returned.
 func (bb *BreakerBox) LoadOrCreate(opts BreakerOptions) (*Breaker, error) {
-	if breaker := bb.breakers.get(opts.Name); breaker != nil {
-		return breaker, nil
+	b, ok := bb.breakers.Load(opts.Name)
+	if ok {
+		return b.(*Breaker), nil
 	}
+
 	return bb.Create(opts)
 }

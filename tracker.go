@@ -26,14 +26,14 @@ func newErrTracker(dur time.Duration) errTracker {
 	var sz uint32
 	e.sz = &sz
 
-	e.poll()
+	e.poll(evictInterval)
 
 	return e
 }
 
-func (e errTracker) poll() {
+func (e errTracker) poll(interval time.Duration) {
 	go func(e *errTracker) {
-		t := time.NewTicker(evictInterval)
+		t := time.NewTicker(interval)
 		window := e.window
 		for {
 			select {
