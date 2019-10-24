@@ -2,7 +2,7 @@
 
 A highly-tunable circuit breaker
 
-| :no_entry_sign: WARNING: This project is still a work in progress and is therefore unversioned and unlicensed.  It's public only due to the limited number of collaborators imposed by GitHub on private repos.  Please don't use this, but feel free to file issues and PRs |
+| :no_entry_sign: WARNING: This project is still a work in progress and is therefore unversioned and unlicensed.  It's public only due to the limited number of collaborators imposed by GitHub on private repos.  Please don't use this in production, but _do_ feel free to file issues and PRs |
 | --- |
 
 badges
