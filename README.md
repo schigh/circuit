@@ -2,6 +2,9 @@
 
 A highly-tunable circuit breaker
 
+| WARNING: This project is still a work in progress and is therefore unversioned and unlicensed.  It's public only due to the limited number of collaborators imposed by GitHub on private repos.  Please don't use this, but feel free to file issues and PRs |
+| --- |
+
 badges
 
 Circuit implements the [circuit breaker](https://www.martinfowler.com/bliki/CircuitBreaker.html) design pattern in Go.
