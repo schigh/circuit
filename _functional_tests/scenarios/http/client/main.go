@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,76 +21,99 @@ var theBox *circuit.BreakerBox
 func main() {
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
-	rand.Seed(time.Now().UnixNano())
 	log.SetPrefix("client - ")
 
+	serverAddr := os.Getenv("SERVER_ADDR")
+	if serverAddr == "" {
+		serverAddr = "http://localhost:8080"
+	}
+
 	theBox = circuit.NewBreakerBox()
+
+	// Log state changes from all client-side breakers
+	go func() {
+		for state := range theBox.StateChange() {
+			log.Printf("client breaker '%s' → %s", state.Name, state.State)
+		}
+	}()
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	breakerNames := []string{"foo", "bar", "baz", "fizz", "buzz", "herp", "derp"}
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	log.Printf("starting load against %s", serverAddr)
 
 	for {
 		select {
 		case <-stopChan:
-			goto END
-		default:
-			<-time.After(100 * time.Millisecond)
-			breakernames := []string{
-				"foo",
-				"bar",
-				"baz",
-				"fizz",
-				"buzz",
-				"herp",
-				"derp",
-			}
-			breakerName := breakernames[rand.Intn(len(breakernames))]
-			breaker, _ := theBox.LoadOrCreate(circuit.BreakerOptions{
-				OpeningWillResetErrors: false,
-				Threshold:              3,
-				Timeout:                10 * time.Millisecond,
-				BaudRate:               0,
-				BackOff:                10 * time.Second,
-				Window:                 10 * time.Second,
-				LockOut:                5 * time.Second,
-				Name:                   breakerName,
-				EstimationFunc:         circuit.Exponential,
-			})
-
-			go func(breaker *circuit.Breaker, name string) {
-				_, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
-					uri := fmt.Sprintf("http://localhost:8080?cb=%s&errchance=%d", name, 9000)
-					resp, err := http.DefaultClient.Get(uri)
-					if err != nil {
-						return []byte(nil), err
-					}
-					defer resp.Body.Close()
-					data, _ := ioutil.ReadAll(resp.Body)
-					switch resp.StatusCode {
-					case http.StatusOK, http.StatusPartialContent:
-						return data, nil
-					case http.StatusForbidden:
-						log.Printf("throttled on server: '%s'", name)
-						return data, errors.New("throttled")
-					case http.StatusInternalServerError:
-						log.Printf("open on server: '%s'", name)
-						return data, errors.New("open")
-					}
-					log.Println("wat")
-					return data, nil
-				})
-
-				if err != nil {
-					if errors.Is(err, circuit.StateOpenError) {
-						log.Printf("open on client: '%s'", name)
-					} else if errors.Is(err, circuit.StateThrottledError) {
-						log.Printf("throttled on client: '%s'", name)
-					} else {
-						log.Printf("error from inside breaker '%s': %v", name, err)
-					}
-				}
-
-			}(breaker, breakerName)
+			log.Println("shutting down...")
+			return
+		case <-ticker.C:
+			name := breakerNames[rand.IntN(len(breakerNames))]
+			go makeRequest(httpClient, serverAddr, name)
 		}
 	}
-
-END:
-	println("bye")
 }
+
+func makeRequest(httpClient *http.Client, serverAddr, name string) {
+	breaker, err := theBox.LoadOrCreate(name,
+		circuit.WithThreshold(3),
+		circuit.WithTimeout(2*time.Second),
+		circuit.WithBackOff(10*time.Second),
+		circuit.WithWindow(10*time.Second),
+		circuit.WithLockOut(5*time.Second),
+		circuit.WithEstimationFunc(circuit.Exponential),
+		circuit.WithIsExcluded(func(err error) bool {
+			// Don't count server-side throttling against the client breaker
+			return errors.Is(err, errServerThrottled)
+		}),
+	)
+	if err != nil {
+		log.Printf("failed to get breaker '%s': %v", name, err)
+		return
+	}
+
+	body, err := circuit.Run(breaker, context.Background(), func(ctx context.Context) (string, error) {
+		uri := fmt.Sprintf("%s?cb=%s&errchance=%d", serverAddr, name, 9000)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("request failed: %w", err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return string(data), nil
+		case http.StatusTooManyRequests:
+			return string(data), errServerThrottled
+		case http.StatusServiceUnavailable:
+			return string(data), fmt.Errorf("server circuit open: %s", data)
+		case http.StatusGatewayTimeout:
+			return string(data), fmt.Errorf("server timeout: %s", data)
+		default:
+			return string(data), fmt.Errorf("server error %d: %s", resp.StatusCode, data)
+		}
+	})
+
+	if err != nil {
+		switch {
+		case errors.Is(err, circuit.ErrStateOpen):
+			log.Printf("[%s] client breaker OPEN — request rejected", name)
+		case errors.Is(err, circuit.ErrStateThrottled):
+			log.Printf("[%s] client breaker THROTTLED — request shed", name)
+		case errors.Is(err, errServerThrottled):
+			log.Printf("[%s] server throttled (excluded from client tracking)", name)
+		default:
+			log.Printf("[%s] error: %v", name, err)
+		}
+		return
+	}
+
+	_ = body // success — quiet in logs to reduce noise
+}
+
+var errServerThrottled = errors.New("server throttled")

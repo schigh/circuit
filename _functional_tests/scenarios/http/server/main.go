@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"runtime"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -21,92 +22,174 @@ import (
 
 var theBox *circuit.BreakerBox
 
-func run(ctx context.Context, cbname string, errchance int) (string, int) {
-	opts := circuit.BreakerOptions{
-		OpeningWillResetErrors: true,
-		Threshold:              5,
-		Timeout:                time.Second,
-		BackOff:                10 * time.Second,
-		Window:                 time.Minute,
-		LockOut:                5 * time.Second,
-		Name:                   cbname,
+// --- Prometheus-compatible metrics collector ---
+
+type metricsCollector struct {
+	mu         sync.Mutex
+	successes  map[string]*atomic.Int64
+	errors     map[string]*atomic.Int64
+	timeouts   map[string]*atomic.Int64
+	rejected   map[string]*atomic.Int64
+	excluded   map[string]*atomic.Int64
+	stateGauge map[string]*atomic.Int64 // 0=closed, 1=throttled, 2=open
+}
+
+func newMetricsCollector() *metricsCollector {
+	return &metricsCollector{
+		successes:  make(map[string]*atomic.Int64),
+		errors:     make(map[string]*atomic.Int64),
+		timeouts:   make(map[string]*atomic.Int64),
+		rejected:   make(map[string]*atomic.Int64),
+		excluded:   make(map[string]*atomic.Int64),
+		stateGauge: make(map[string]*atomic.Int64),
 	}
-	breaker, _ := theBox.LoadOrCreate(opts)
+}
 
-	_, err := breaker.Run(ctx, func(ctx context.Context) (interface{}, error) {
-		if rand.Intn(10000) > errchance {
-			return false, errors.New("broken")
+func (m *metricsCollector) counter(store map[string]*atomic.Int64, name string) *atomic.Int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := store[name]
+	if !ok {
+		c = &atomic.Int64{}
+		store[name] = c
+	}
+	return c
+}
+
+func (m *metricsCollector) RecordSuccess(name string, _ time.Duration) {
+	m.counter(m.successes, name).Add(1)
+}
+func (m *metricsCollector) RecordError(name string, _ time.Duration, _ error) {
+	m.counter(m.errors, name).Add(1)
+}
+func (m *metricsCollector) RecordTimeout(name string) {
+	m.counter(m.timeouts, name).Add(1)
+}
+func (m *metricsCollector) RecordRejected(name string, _ circuit.State) {
+	m.counter(m.rejected, name).Add(1)
+}
+func (m *metricsCollector) RecordExcluded(name string, _ error) {
+	m.counter(m.excluded, name).Add(1)
+}
+func (m *metricsCollector) RecordStateChange(name string, _, to circuit.State) {
+	m.counter(m.stateGauge, name).Store(int64(to))
+}
+
+// ServeHTTP exposes metrics in Prometheus exposition format
+func (m *metricsCollector) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+
+	m.mu.Lock()
+	// snapshot the keys
+	names := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, store := range []map[string]*atomic.Int64{m.successes, m.errors, m.timeouts, m.rejected, m.excluded, m.stateGauge} {
+		for name := range store {
+			if !seen[name] {
+				names = append(names, name)
+				seen[name] = true
+			}
 		}
+	}
+	m.mu.Unlock()
 
+	for _, name := range names {
+		fmt.Fprintf(w, "circuit_breaker_successes{breaker=%q} %d\n", name, m.counter(m.successes, name).Load())
+		fmt.Fprintf(w, "circuit_breaker_errors{breaker=%q} %d\n", name, m.counter(m.errors, name).Load())
+		fmt.Fprintf(w, "circuit_breaker_timeouts{breaker=%q} %d\n", name, m.counter(m.timeouts, name).Load())
+		fmt.Fprintf(w, "circuit_breaker_rejected{breaker=%q} %d\n", name, m.counter(m.rejected, name).Load())
+		fmt.Fprintf(w, "circuit_breaker_excluded{breaker=%q} %d\n", name, m.counter(m.excluded, name).Load())
+		fmt.Fprintf(w, "circuit_breaker_state{breaker=%q} %d\n", name, m.counter(m.stateGauge, name).Load())
+	}
+}
+
+// --- Server logic ---
+
+var metrics *metricsCollector
+
+func run(ctx context.Context, cbname string, errchance int) (string, int) {
+	breaker, _ := theBox.LoadOrCreate(cbname,
+		circuit.WithThreshold(5),
+		circuit.WithTimeout(time.Second),
+		circuit.WithBackOff(10*time.Second),
+		circuit.WithWindow(time.Minute),
+		circuit.WithLockOut(5*time.Second),
+		circuit.WithOpeningResetsErrors(true),
+		circuit.WithMetrics(metrics),
+	)
+
+	_, err := circuit.Run(breaker, ctx, func(ctx context.Context) (bool, error) {
+		// simulate an unreliable dependency
+		if rand.IntN(10000) > errchance {
+			return false, errors.New("dependency failure")
+		}
 		return true, nil
 	})
 
 	if err != nil {
-		if errors.Is(err, circuit.StateOpenError) {
-			return fmt.Sprintf("circuit breaker '%s' is open", cbname), http.StatusInternalServerError
-		} else if errors.Is(err, circuit.StateThrottledError) {
-			return fmt.Sprintf("circuit breaker '%s' is throttled", cbname), http.StatusForbidden
+		switch {
+		case errors.Is(err, circuit.ErrStateOpen):
+			return fmt.Sprintf("circuit breaker '%s' is open", cbname), http.StatusServiceUnavailable
+		case errors.Is(err, circuit.ErrStateThrottled):
+			return fmt.Sprintf("circuit breaker '%s' is throttled", cbname), http.StatusTooManyRequests
+		case errors.Is(err, circuit.ErrTimeout):
+			return fmt.Sprintf("circuit breaker '%s' timed out", cbname), http.StatusGatewayTimeout
+		default:
+			return fmt.Sprintf("error inside circuit breaker '%s': %v", cbname, err), http.StatusBadGateway
 		}
-		return fmt.Sprintf("an error occured inside circuit breaker '%s'", cbname), http.StatusPartialContent
 	}
 	return "ok", http.StatusOK
 }
 
-func createMuxxer() *http.ServeMux {
+func createMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(rw http.ResponseWriter, r *http.Request) {
-		_cbname := r.URL.Query()["cb"]
-		_errchance := r.URL.Query()["errchance"]
-		if len(_cbname) == 0 || len(_errchance) == 0 {
-			http.Error(rw, "cb and errchance are required", http.StatusBadRequest)
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		cbname := r.URL.Query().Get("cb")
+		errchanceStr := r.URL.Query().Get("errchance")
+		if cbname == "" || errchanceStr == "" {
+			http.Error(w, "cb and errchance query params are required", http.StatusBadRequest)
 			return
 		}
-		errchance, convErr := strconv.Atoi(_errchance[0])
-		if convErr != nil {
-			http.Error(rw, "errchance must be an integer", http.StatusBadRequest)
+		errchance, err := strconv.Atoi(errchanceStr)
+		if err != nil {
+			http.Error(w, "errchance must be an integer", http.StatusBadRequest)
 			return
 		}
-		cbname := _cbname[0]
 
 		data, status := run(r.Context(), cbname, errchance)
-		rw.WriteHeader(status)
-		_, _ = rw.Write([]byte(data))
+		w.WriteHeader(status)
+		fmt.Fprint(w, data)
 	})
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	mux.Handle("/metrics", metrics)
 
 	return mux
 }
 
-func handleState(state circuit.BreakerState) {
-	data, _ := json.MarshalIndent(&state, "", "  ")
-	log.Printf("state: %s", data)
-}
-
 func main() {
 	stopChan := make(chan os.Signal, 1)
-	endChan := make(chan struct{})
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
 	log.SetOutput(os.Stderr)
 	log.SetPrefix("server - ")
-	rand.Seed(time.Now().UnixNano())
 
-	runtime.SetBlockProfileRate(1)
-	runtime.SetMutexProfileFraction(1)
-
+	metrics = newMetricsCollector()
 	theBox = circuit.NewBreakerBox()
 
-	go func(box *circuit.BreakerBox, endChan chan struct{}) {
-		stateChange := box.StateChange()
-		for {
-			select {
-			case state := <-stateChange:
-				handleState(state)
-			case <-endChan:
-				return
-			}
+	// Log state changes
+	go func() {
+		for state := range theBox.StateChange() {
+			data, _ := json.Marshal(&state)
+			log.Printf("state change: %s", data)
 		}
-	}(theBox, endChan)
+	}()
 
-	mux := createMuxxer()
+	mux := createMux()
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
@@ -114,25 +197,23 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	go func(server *http.Server) {
-		if err := server.ListenAndServe(); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
+	go func() {
+		log.Printf("server listening on :8080")
+		log.Printf("metrics at :8080/metrics")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
 		}
-	}(server)
+	}()
 
-	pprofServer := &http.Server{
-		Addr:         ":6060",
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 60 * time.Second,
-	}
-	go func(server *http.Server) {
-		if err := server.ListenAndServe(); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-		}
-	}(pprofServer)
+	// pprof
+	go func() {
+		log.Printf("pprof listening on :6060")
+		http.ListenAndServe(":6060", nil)
+	}()
 
 	<-stopChan
-	endChan <- struct{}{}
-	_ = server.Close()
-	_ = pprofServer.Close()
+	log.Println("shutting down...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	server.Shutdown(ctx)
 }
