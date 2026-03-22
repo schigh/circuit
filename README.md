@@ -1,6 +1,10 @@
-# circuit
+<p align="center">
+  <img src="_img/logo.png" alt="circuit" />
+</p>
 
-A highly-tunable circuit breaker for Go.
+<p align="center">
+  A highly-tunable circuit breaker for Go.
+</p>
 
 Circuit implements the [circuit breaker](https://www.martinfowler.com/bliki/CircuitBreaker.html) design pattern with gradual recovery via probabilistic throttling, type-safe generics, and zero background goroutines.
 
@@ -236,14 +240,6 @@ During the throttled state, the breaker probabilistically sheds requests using a
 
 ### Built-in Strategies
 
-| Strategy | Behavior |
-|----------|----------|
-| `Linear` (default) | Steady decrease in blocking probability |
-| `Logarithmic` | High blocking initially, rapid decrease after midpoint |
-| `Exponential` | Rapid initial decrease, gradual easing |
-| `EaseInOut` | Smooth S-curve transition |
-| `JitteredLinear` | Linear with ±5 random jitter to prevent thundering herd |
-
 ```go
 b, _ := circuit.NewBreaker(
     circuit.WithName("api-gateway"),
@@ -251,6 +247,34 @@ b, _ := circuit.NewBreaker(
     circuit.WithEstimationFunc(circuit.Exponential),
 )
 ```
+
+#### Linear (default)
+
+Steady, proportional decrease in blocking probability.
+
+![Linear estimation](_img/linear.png)
+
+#### Logarithmic
+
+High blocking initially, rapid decrease after the midpoint.
+
+![Logarithmic estimation](_img/logarithmic.png)
+
+#### Exponential
+
+Rapid initial decrease, gradual easing toward full throughput.
+
+![Exponential estimation](_img/exponential.png)
+
+#### Ease-In-Out
+
+Smooth S-curve — high blocking early, steep drop at midpoint, gentle finish.
+
+![Ease-In-Out estimation](_img/easeinout.png)
+
+#### JitteredLinear
+
+Linear with ±5 random jitter to prevent thundering herd effects during recovery.
 
 ### Custom Strategies
 
