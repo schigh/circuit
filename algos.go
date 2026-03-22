@@ -1,21 +1,16 @@
 package circuit
 
+import "math/rand/v2"
+
 /*
 These curves were generated using gonum.org/v1/plot/tools/bezier
 */
 
-/*
-Forgive the terrible ASCII charts in this file
-*/
-
 // EstimationFunc takes in a number within range [1 - 100] and returns a probability that a
 // request should be blocked based on that number.
-// The periodicity of this function is directly proportional to the backoff duration of the
-// circuit breaker, where frequency = backoff duration / 100
-// The estimation function will be called exactly 100 times during the backoff period, unless
-// the circuit breaker reopens.  All backoff periods start by interpolating 1 and increasing
-// towards 100
-//
+// The tick value is calculated from elapsed time: tick = elapsed * 100 / backoff.
+// Tick 1 represents the start of the backoff period; tick 100 represents the end.
+// The function is called lazily on each request during the throttled state.
 type EstimationFunc func(int) uint32
 
 var logCurve = []uint32{
@@ -59,16 +54,6 @@ var easeInOutCurve = []uint32{
 
 // Linear backoff will return a probability directly
 // proportional to the current tick
-// |•
-// |    •
-// |        •
-// |            •
-// |                •
-// |                    •
-// |                        •
-// |                            •
-// |                                •
-// |____________________________________•_
 func Linear(tick int) uint32 {
 	return uint32(100 - tick)
 }
@@ -76,48 +61,33 @@ func Linear(tick int) uint32 {
 // Logarithmic backoff will block most initial requests and
 // increase the rate of passes at a similar rate after the
 // middle point in the curve is reached
-// |•••••••••••
-// |           ••••••••••
-// |                     ••••••••
-// |                             ••••••
-// |                                   ••••
-// |                                       ••
-// |                                         •
-// |                                          •
-// |                                          •
-// |__________________________________________•_
 func Logarithmic(tick int) uint32 {
 	return logCurve[tick-1]
 }
 
 // Exponential backoff will reduce the number of blocks
 // drastically at first, gradually slowing the rate
-// |•
-// |•
-// | •
-// | •
-// |  •
-// |   •
-// |     •
-// |        ••
-// |            •••
-// |_________________•••••••••••••••••••••••••
 func Exponential(tick int) uint32 {
 	return expCurve[tick-1]
 }
 
 // EaseInOut will block most requests initially, then pass at
 // a steep rate, eventually slowing down the pass rate
-// | ••••••••
-// |         •••
-// |             •
-// |              •
-// |               •
-// |                •
-// |                 •
-// |                  •
-// |                   •••
-// |______________________••••••••••••••••_____
 func EaseInOut(tick int) uint32 {
 	return easeInOutCurve[tick-1]
+}
+
+// JitteredLinear is like Linear but adds random jitter of +/- 5
+// to reduce thundering herd effects during recovery.
+func JitteredLinear(tick int) uint32 {
+	base := 100 - tick
+	jitter := int(rand.IntN(11)) - 5 // [-5, 5]
+	result := base + jitter
+	if result > 100 {
+		return 100
+	}
+	if result < 0 {
+		return 0
+	}
+	return uint32(result)
 }

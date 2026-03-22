@@ -1,3 +1,3 @@
 module github.com/schigh/circuit
 
-go 1.13
+go 1.22

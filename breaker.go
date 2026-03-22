@@ -2,8 +2,9 @@ package circuit
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"path"
 	"runtime"
 	"strings"
@@ -18,91 +19,14 @@ const (
 	internalOpen
 )
 
-// Runner is the function signature for calls to Run
-type Runner func(context.Context) (interface{}, error)
-
-// BreakerOptions contains configuration options for a circuit breaker
-type BreakerOptions struct {
-	// OpeningWillResetErrors will cause the error count to reset
-	// when the circuit breaker opens.  If this is set true, all
-	// blocked calls will come from the throttled backoff, unless
-	// the circuit breaker has a lockout duration.
-	OpeningWillResetErrors bool
-
-	// IgnoreContext will prevent context cancellation to
-	// propagate to any in-flight Run functions.
-	IgnoreContext bool
-
-	// Threshold is the maximum number of errors that
-	// can occur within the window before the circuit
-	// breaker opens. By default, one error will open
-	// the circuit breaker.
-	Threshold uint32
-
-	// Timeout is the maximum duration that the Run func
-	// can execute before timing out.  The default Timeout
-	// is 3 seconds.
-	Timeout time.Duration
-
-	// BaudRate is the duration between error calculations.
-	// The default value is 250ms.  The minimum BaudRate
-	// is 10ms
-	BaudRate time.Duration
-
-	// BackOff is the duration that a circuit breaker is
-	// throttled.  The default BackOff is 1 minute.
-	// The minimum BackOff is 1 second.
-	BackOff time.Duration
-
-	// Window is the length of time checked for error
-	// calculation. The default Window is 5 minutes.
-	// The minimum Window is 5 seconds.
-	Window time.Duration
-
-	// LockOut is the length of time that a circuit breaker
-	// is forced open before attempting to throttle.
-	// If no lockout is provided, the circuit breaker will
-	// transition to a throttled state only after its error
-	// count is at or below the threshold.  While a circuit
-	// breaker is open, all requests are rejected and no
-	// new errors are recorded.
-	LockOut time.Duration
-
-	// Name is the circuit breaker name. If name is not provided,
-	// a unique name will be created based on the caller to NewBreaker.
-	Name string
-
-	// EstimationFunc is the function used to determine
-	// the chance of a request being throttled during the
-	// backoff period.  By default, Linear estimation is used.
-	EstimationFunc EstimationFunc
-
-	// PreProcessors are functions that execute in order before
-	// the Runner function is executed.  If a preprocessor
-	// returns an error, the execution is canceled and the error
-	// is returned from Run.
-	PreProcessors []PreProcessor
-
-	// PostProcessors are functions that execute in order after
-	// the Runner has executed.  The return values from the
-	// Runner are passed along to the first postprocessor.
-	// If there are subsequent postprocessors, each will take
-	// the return value of its predecessor.
-	PostProcessors []PostProcessor
-}
-
 // Breaker is the circuit breaker implementation for this package
 type Breaker struct {
-
 	// switches
-	initialized   bool // Flag to check if the breaker was initialized via NewBreaker
-	ignoreContext bool // If true, will not propagate context cancellation
 	openingResets bool // If true, the circuit breaker resets its error count upon opening
 
 	// state
-	threshold      uint32 // Maximum number of errors allowed to occur in window
-	state          uint32 // Current state
-	throttleChance uint32 // Chance of a request being throttled during backoff
+	threshold uint32 // Maximum number of errors allowed to occur in window
+	state     uint32 // Current state
 
 	// event timestamps
 	lockedSince    int64 // Unix nano timestamp of current lock creation
@@ -114,46 +38,38 @@ type Breaker struct {
 	name string // Circuit Breaker name
 
 	// timings
-	timeout  time.Duration // Timeout for Run func
-	baudrate time.Duration // Polling rate to recalculate error counts
-	backoff  time.Duration // Length of time the breaker is throttled
-	lockout  time.Duration // Length of time a breaker is locked out once it opens
-	window   time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
+	timeout time.Duration // Timeout for Run func
+	backoff time.Duration // Length of time the breaker is throttled
+	lockout time.Duration // Length of time a breaker is locked out once it opens
+	window  time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
 
 	// misc
-	stateMX  sync.Mutex     // Mutex around state change
-	tracker  errTracker     // Error tracker
-	estimate EstimationFunc // Function used to estimate throttling chance
+	stateMX  sync.Mutex      // Protects state transitions in evaluateState/changeStateTo
+	tracker  *errTracker     // Error tracker
+	estimate EstimationFunc  // Function used to estimate throttling chance
+	metrics  MetricsCollector // Optional metrics collector
 
 	// orchestration
-	currThrottles []chan struct{} // Signaling channels to stop throttle backoff
-	stateChange   chan BreakerState
+	stateChange    chan BreakerState
+	boxStateChange chan BreakerState // set by BreakerBox.Create for forwarding
 
-	// pre/post processing
-	preprocessors  []PreProcessor
-	postprocessors []PostProcessor
+	// hooks
+	onStateChange func(breakerName string, from, to State)
+
+	// error classification
+	isSuccessful func(error) bool
+	isExcluded   func(error) bool
 }
 
-// NewBreaker will create a new Breaker using the
-// supplied options.  All new Breaker instances
-// MUST be created with this function.  All calls
-// to Run using a Breaker created elsewhere will
-// fail immediately.
-func NewBreaker(opts BreakerOptions) *Breaker {
-	b := &Breaker{
-		name:           opts.Name,
-		timeout:        opts.Timeout,
-		baudrate:       opts.BaudRate,
-		backoff:        opts.BackOff,
-		window:         opts.Window,
-		threshold:      opts.Threshold,
-		lockout:        opts.LockOut,
-		estimate:       opts.EstimationFunc,
-		openingResets:  opts.OpeningWillResetErrors,
-		ignoreContext:  opts.IgnoreContext,
-		preprocessors:  opts.PreProcessors,
-		postprocessors: opts.PostProcessors,
+// NewBreaker creates a new Breaker using functional options.
+// All new Breaker instances MUST be created with this function.
+func NewBreaker(opts ...Option) (*Breaker, error) {
+	b := &Breaker{}
+
+	for _, opt := range opts {
+		opt(b)
 	}
+
 	// if there is no name, just make a signature from the caller
 	if b.name == "" {
 		function, file, line, _ := runtime.Caller(1)
@@ -171,12 +87,6 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 	if b.timeout == 0 {
 		b.timeout = DefaultTimeout
 	}
-	if b.baudrate == 0 {
-		b.baudrate = DefaultBaudRate
-	}
-	if b.baudrate < minimumBaudRate {
-		b.baudrate = minimumBaudRate
-	}
 	if b.backoff == 0 {
 		b.backoff = DefaultBackOff
 	}
@@ -193,20 +103,10 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		b.estimate = Linear
 	}
 
-	b.stateChange = make(chan BreakerState, 1)
+	b.stateChange = make(chan BreakerState, 16)
 	b.tracker = newErrTracker(b.window)
 	now := time.Now()
 	b.closedSince = now.UnixNano()
-	go func(b *Breaker) {
-		t := time.NewTicker(b.baudrate)
-		for {
-			select {
-			case <-t.C:
-				b.calc()
-			}
-		}
-	}(b)
-	b.initialized = true
 
 	b.stateChange <- BreakerState{
 		Name:        b.name,
@@ -214,7 +114,7 @@ func NewBreaker(opts BreakerOptions) *Breaker {
 		ClosedSince: &now,
 	}
 
-	return b
+	return b, nil
 }
 
 // get the lock status
@@ -232,12 +132,10 @@ func (b *Breaker) openAndLockedStatus() (openedAt time.Time, lockedAt time.Time,
 	return
 }
 
-// open the circuit breaker and lock it out if enabled
+// open the circuit breaker and set lockout timestamp if enabled
 func (b *Breaker) setOpen(is bool) {
-	// if resetting the counter is enabled, it is done regardless of lockout
 	b.tracker.reset(is && b.openingResets)
 
-	// setting open to false
 	if !is {
 		atomic.SwapInt64(&b.openSince, 0)
 		return
@@ -246,21 +144,10 @@ func (b *Breaker) setOpen(is bool) {
 	nowNano := time.Now().UnixNano()
 	atomic.SwapInt64(&b.openSince, nowNano)
 
-	// return if no lockout
 	if b.lockout == 0 {
 		return
 	}
-	// set the most recent lock
 	atomic.SwapInt64(&b.lockedSince, nowNano)
-
-	// we only unlock if the current lock identifier
-	// (unix nano timestamp) matches the latest lock...if there was a
-	// previous lock that's been overridden, it wont affect the lock state
-	go func(b *Breaker, lockID int64) {
-		t := time.NewTimer(b.lockout)
-		<-t.C
-		atomic.CompareAndSwapInt64(&b.lockedSince, lockID, 0)
-	}(b, nowNano)
 }
 
 // get the throttle status
@@ -272,56 +159,13 @@ func (b *Breaker) throttledStatus() (time.Time, bool) {
 	return timeFromNS(l), true
 }
 
-func (b *Breaker) deThrottle() {
-	atomic.SwapInt64(&b.throttledSince, 0)
-	atomic.SwapUint32(&b.throttleChance, 0)
-
-	// cancelChan any existing backoff timers
-	for i := range b.currThrottles {
-		b.currThrottles[i] <- struct{}{}
-	}
-
-	// discard backoff
-	b.currThrottles = []chan struct{}(nil)
-}
-
-// make throttled
+// set throttled state (just timestamps, no goroutines)
 func (b *Breaker) setThrottled(is bool) {
 	if !is {
-		b.deThrottle()
+		atomic.SwapInt64(&b.throttledSince, 0)
 		return
 	}
-
 	atomic.SwapInt64(&b.throttledSince, time.Now().UnixNano())
-	atomic.SwapUint32(&b.throttleChance, 100)
-
-	cancelChan := make(chan struct{}, 1)
-	b.currThrottles = append(b.currThrottles, cancelChan)
-
-	t := time.NewTicker(b.backoff / 100)
-	go func(b *Breaker, t *time.Ticker, cancel chan struct{}) {
-		i := 1
-		for {
-			select {
-			case <-t.C:
-				// Here we run the estimation function a maximum of
-				// 100 times.  If the circuit breaker goes from throttled
-				// to open, this ticker is stopped elsewhere.
-				atomic.SwapUint32(&b.throttleChance, b.estimate(i))
-				if i >= 100 {
-					// The backoff has completed without reopening the
-					// circuit breaker.  Here we will close the circuit breaker.
-					t.Stop()
-					go b.changeStateTo(internalClosed)
-					return
-				}
-				i++
-			case <-cancel:
-				t.Stop()
-				return
-			}
-		}
-	}(b, t, cancelChan)
 }
 
 // get the closed status
@@ -333,7 +177,6 @@ func (b *Breaker) closedStatus() (time.Time, bool) {
 	return timeFromNS(l), true
 }
 
-// make closed
 func (b *Breaker) setClosed(is bool) {
 	if is {
 		atomic.SwapInt64(&b.closedSince, time.Now().UnixNano())
@@ -342,18 +185,16 @@ func (b *Breaker) setClosed(is bool) {
 	atomic.SwapInt64(&b.closedSince, 0)
 }
 
-// record state transition
-func (b *Breaker) changeStateTo(to uint32) {
-	b.stateMX.Lock()
-	defer b.stateMX.Unlock()
-	// Possible state transitions:
-	//    - Closed to Open
-	//    - Open to Throttled
-	//    - Throttled to Open
-	//    - Throttled to Closed
+// changeStateTo records a state transition.
+// Must be called with stateMX write-locked.
+// The onStateChange callback is invoked AFTER releasing the lock
+// to avoid blocking requests on user code.
+// Returns the BreakerState and whether a transition occurred,
+// so the caller can invoke hooks after releasing the lock.
+func (b *Breaker) changeStateTo(to uint32) (BreakerState, bool) {
 	from := atomic.SwapUint32(&b.state, to)
 	if from == to {
-		return
+		return BreakerState{}, false
 	}
 
 	newState := BreakerState{
@@ -397,173 +238,235 @@ func (b *Breaker) changeStateTo(to uint32) {
 		}
 	}
 
-	// this will prevent a block if no one is listening on the other end
+	if b.metrics != nil {
+		b.metrics.RecordStateChange(b.name, State(from), State(to))
+	}
+
 	select {
 	case b.stateChange <- newState:
 	default:
-		break
 	}
+
+	if b.boxStateChange != nil {
+		select {
+		case b.boxStateChange <- newState:
+		default:
+		}
+	}
+
+	return newState, true
 }
 
-// calculate error frame
-func (b *Breaker) calc() {
+// evaluateState lazily evaluates and transitions state.
+// Must be called with stateMX held.
+// Returns the pending onStateChange callback info (if any)
+// so the caller can invoke it after releasing the lock.
+func (b *Breaker) evaluateState() (from, to State, transitioned bool) {
 	state := atomic.LoadUint32(&b.state)
+	var target uint32
 	switch state {
 	case internalClosed:
 		if b.tracker.size() > b.threshold {
-			b.changeStateTo(internalOpen)
+			target = internalOpen
+		} else {
+			return
+		}
+	case internalOpen:
+		lockedAt := atomic.LoadInt64(&b.lockedSince)
+		if lockedAt != 0 {
+			if time.Since(timeFromNS(lockedAt)) >= b.lockout {
+				atomic.StoreInt64(&b.lockedSince, 0)
+			} else {
+				return // still locked
+			}
+		}
+		if b.tracker.size() <= b.threshold {
+			target = internalThrottled
+		} else {
+			return
 		}
 	case internalThrottled:
 		if b.tracker.size() > b.threshold {
-			b.changeStateTo(internalOpen)
+			target = internalOpen
+		} else {
+			ts := atomic.LoadInt64(&b.throttledSince)
+			if ts != 0 && time.Since(timeFromNS(ts)) >= b.backoff {
+				target = internalClosed
+			} else {
+				return
+			}
 		}
-	case internalOpen:
-		// we're locked, nothing to do
-		if lockedAt := atomic.LoadInt64(&b.lockedSince); lockedAt != 0 {
-			return
-		}
-		// error density needs to decay a bit more
-		if b.tracker.size() > b.threshold {
-			return
-		}
-		b.changeStateTo(internalThrottled)
+	default:
+		return
 	}
+
+	_, changed := b.changeStateTo(target)
+	if changed {
+		return State(state), State(target), true
+	}
+	return
 }
 
+// applyThrottle calculates throttle chance lazily from elapsed time.
 func (b *Breaker) applyThrottle() error {
-	chance := atomic.LoadUint32(&b.throttleChance)
-	if rand.New(rand.NewSource(time.Now().UnixNano())).Uint32()%100 >= chance {
+	ts := atomic.LoadInt64(&b.throttledSince)
+	if ts == 0 {
 		return nil
 	}
-
-	return StateThrottledError
-}
-
-func (b *Breaker) preProcess(ctx context.Context, runner Runner) (context.Context, Runner, error) {
-	var err error
-	for i := range b.preprocessors {
-		ctx, runner, err = b.preprocessors[i](ctx, runner)
-		if err != nil {
-			return ctx, nil, err
-		}
+	elapsed := time.Since(timeFromNS(ts))
+	tick := int(elapsed * 100 / b.backoff)
+	if tick < 1 {
+		tick = 1
 	}
-	return ctx, runner, nil
-}
-
-func (b *Breaker) postProcess(ctx context.Context, p interface{}, err error) (interface{}, error) {
-	for i := range b.postprocessors {
-		p, err = b.postprocessors[i](ctx, p, err)
+	if tick > 100 {
+		tick = 100
 	}
-	return p, err
+	chance := b.estimate(tick)
+	if rand.Uint32N(100) >= chance {
+		return nil
+	}
+	return ErrStateThrottled.withContext(b.name, Throttled)
 }
 
-// determine if Run can continue
+// checkFitness determines if a request is allowed to proceed.
 func (b *Breaker) checkFitness(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+
+	// Fast path: if closed and no errors exceed threshold, skip the lock entirely.
+	// This is the overwhelmingly common case in production.
 	state := atomic.LoadUint32(&b.state)
+	if state == internalClosed && b.tracker.size() <= b.threshold {
+		return nil
+	}
+
+	// Slow path: state may need to transition. Acquire lock.
+	b.stateMX.Lock()
+	from, to, transitioned := b.evaluateState()
+	b.stateMX.Unlock()
+
+	if transitioned && b.onStateChange != nil {
+		b.onStateChange(b.name, from, to)
+	}
+
+	state = atomic.LoadUint32(&b.state)
 	switch state {
 	case internalOpen:
-		return StateOpenError
+		if b.metrics != nil {
+			b.metrics.RecordRejected(b.name, Open)
+		}
+		return ErrStateOpen.withContext(b.name, Open)
 	case internalThrottled:
-		// this may return an error immediately, or allow the runner to
-		// continue, depending on the error rate and the back off timing
-		return b.applyThrottle()
+		err := b.applyThrottle()
+		if err != nil && b.metrics != nil {
+			b.metrics.RecordRejected(b.name, Throttled)
+		}
+		return err
 	case internalClosed:
 		return nil
 	default:
-		return StateUnknownError
+		return ErrStateUnknown.withContext(b.name, State(state))
 	}
 }
 
-// Run wraps the execution of function runner
-func (b *Breaker) Run(ctx context.Context, runner Runner) (interface{}, error) {
-	if !b.initialized {
-		return nil, NotInitializedError
+// recordOutcome classifies and records the result of a call.
+func (b *Breaker) recordOutcome(err error, elapsed time.Duration) {
+	if err == nil {
+		if b.metrics != nil {
+			b.metrics.RecordSuccess(b.name, elapsed)
+		}
+		return
 	}
 
-	// run any preprocessors
-	var preErr error
-	ctx, runner, preErr = b.preProcess(ctx, runner)
-	if preErr != nil {
-		return nil, preErr
+	// excluded errors are not tracked at all
+	if b.isExcluded != nil && b.isExcluded(err) {
+		if b.metrics != nil {
+			b.metrics.RecordExcluded(b.name, err)
+		}
+		return
 	}
 
-	// checkFitness determines if this invocation is allowed to happen
+	// errors classified as successful don't count as failures
+	if b.isSuccessful != nil && b.isSuccessful(err) {
+		if b.metrics != nil {
+			b.metrics.RecordSuccess(b.name, elapsed)
+		}
+		return
+	}
+
+	// classify deadline exceeded as timeout
+	if errors.Is(err, context.DeadlineExceeded) {
+		if b.metrics != nil {
+			b.metrics.RecordTimeout(b.name)
+		}
+	}
+
+	// failure
+	b.tracker.incr()
+	if b.metrics != nil {
+		b.metrics.RecordError(b.name, elapsed, err)
+	}
+}
+
+// Allow checks if the breaker allows a request (two-step mode).
+// If allowed, it returns a done callback. The caller invokes done(err)
+// after the operation completes to report the outcome.
+// No timeout is applied — the caller controls timing.
+func (b *Breaker) Allow(ctx context.Context) (func(error), error) {
+	if b.tracker == nil {
+		return nil, ErrNotInitialized
+	}
 	if err := b.checkFitness(ctx); err != nil {
 		return nil, err
 	}
-
-	type result struct {
-		value interface{}
-		err   error
+	start := time.Now()
+	done := func(err error) {
+		b.recordOutcome(err, time.Since(start))
 	}
-
-	resultChan := make(chan result, 1)
-	timeout := time.NewTimer(b.timeout)
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
-
-	// run the runner
-	go func(ctx context.Context) {
-		v, e := runner(ctx)
-		resultChan <- result{
-			value: v,
-			err:   e,
-		}
-	}(ctx)
-
-	// return values
-	var out interface{}
-	var outErr error
-
-	select {
-	// circuit breaker has timed out
-	case <-timeout.C:
-		if !b.ignoreContext {
-			cancel()
-		}
-		outErr = TimeoutError
-	// runner has returned values
-	case r := <-resultChan:
-		{
-			timeout.Stop()
-			if r.err != nil {
-				if !b.ignoreContext {
-					cancel()
-				}
-			}
-			out = r.value
-			outErr = r.err
-		}
-	}
-
-	// apply post processing
-	out, outErr = b.postProcess(ctx, out, outErr)
-	if outErr != nil {
-		b.tracker.incr()
-	}
-	return out, outErr
+	return done, nil
 }
 
-// State returns the current state of the circuit breaker
+// Name returns the circuit breaker's name.
+func (b *Breaker) Name() string {
+	return b.name
+}
+
+// State returns the current state of the circuit breaker.
+// This triggers lazy state evaluation.
 func (b *Breaker) State() State {
+	b.stateMX.Lock()
+	from, to, transitioned := b.evaluateState()
+	b.stateMX.Unlock()
+
+	if transitioned && b.onStateChange != nil {
+		b.onStateChange(b.name, from, to)
+	}
+
 	return State(atomic.LoadUint32(&b.state))
 }
 
+// StateChange returns the channel for state change notifications.
 func (b *Breaker) StateChange() <-chan BreakerState {
 	return b.stateChange
 }
 
-// Size gets the number of errors present in the
-// current tracking window
+// Size gets the number of errors present in the current tracking window.
 func (b *Breaker) Size() int {
 	return int(b.tracker.size())
 }
 
-// Snapshot will get a current snapshot of the circuit breaker
+// Snapshot returns a current snapshot of the circuit breaker.
+// This triggers lazy state evaluation.
 func (b *Breaker) Snapshot() BreakerState {
+	b.stateMX.Lock()
+	from, to, transitioned := b.evaluateState()
+	b.stateMX.Unlock()
+
+	if transitioned && b.onStateChange != nil {
+		b.onStateChange(b.name, from, to)
+	}
+
 	state := State(atomic.LoadUint32(&b.state))
 
 	bs := BreakerState{

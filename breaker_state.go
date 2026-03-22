@@ -5,7 +5,7 @@ import "time"
 // BreakerState represents a snapshot of a circuit breaker's
 // internal state, including timings for lockouts and backoff
 type BreakerState struct {
-	Name        string     `json:"string"`
+	Name        string     `json:"name"`
 	State       State      `json:"state"`
 	ClosedSince *time.Time `json:"closed_since,omitempty"`
 	Opened      *time.Time `json:"opened,omitempty"`

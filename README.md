@@ -1,512 +1,493 @@
-![circuit](_img/logo.png)
+# circuit
 
-A highly-tunable circuit breaker
+A highly-tunable circuit breaker for Go.
 
-| :no_entry_sign: WARNING: This project is still a work in progress and is therefore unversioned and unlicensed.  It's public only due to the limited number of collaborators imposed by GitHub on private repos.  Please don't use this in production, but _do_ feel free to file issues and PRs |
-| --- |
-
-badges
-
-Circuit implements the [circuit breaker](https://www.martinfowler.com/bliki/CircuitBreaker.html) design pattern in Go.
-
-<!-- toc -->
-- [Usage](#usage)
-- [Create new circuit breakers with `NewBreaker`](#create-new-circuit-breakers-with-newbreaker)
-- [Running the circuit breaker](#running-the-circuit-breaker)
-  - [Preprocessing and Postprocessing](#preprocessing-and-postprocessing)
-- [Transition States](#transition-states)
-- [LockOut](#lockout)
-- [Backoff Strategy](#backoff-strategy)
-  - [Linear estimation (default)](#linear-estimation-default)
-  - [Logarithmic estimation](#logarithmic-estimation)
-  - [Exponential estimation](#exponential-estimation)
-  - [Ease-In-Out estimation](#ease-in-out-estimation)
-- [Capturing circuit breaker state changes](#capturing-circuit-breaker-state-changes)
-  - [`BreakerState`](#breakerstate)
-- [Reading circuit breaker state](#reading-circuit-breaker-state)
-  - [`State()`](#state)
-  - [`Size()`](#size)
-  - [`Snapshot()`](#snapshot)
-- [Managing circuit breakers with `Box`](#managing-circuit-breakers-with-box)
-  - [Create a breaker box and listen for state changes](#create-a-breaker-box-and-listen-for-state-changes)
-  - [Getting and setting circuit breakers](#getting-and-setting-circuit-breakers)
-  - [Other box functions](#other-box-functions)
-    - [`Load(name string)`](#loadname-string)
-    - [`Create(opts BreakerOptions)`](#createopts-breakeroptions)
-    - [`AddBYO(b *Breaker)`](#addbyob-breaker)
+Circuit implements the [circuit breaker](https://www.martinfowler.com/bliki/CircuitBreaker.html) design pattern with gradual recovery via probabilistic throttling, type-safe generics, and zero background goroutines.
 
 ## Installation
 
-`go get -u github.com/schigh/circuit`
-
-## Usage
-
-### Create new circuit breakers with `NewBreaker`
-
-You can create new circuit breakers with `NewBreaker`.
-`NewBreaker` takes a single `BreakerOptions` parameter:
-
-```go
-// BreakerOptions contains configuration options for a circuit breaker
-type BreakerOptions struct {
-    // Name is the circuit breaker name. If Name is not provided,
-    // a unique Name will be created based on the caller to NewBreaker
-    Name string
-
-    // Timeout is the maximum duration that the Run func
-    // can execute before timing out.  The default Timeout
-    // is 3 seconds.
-    Timeout time.Duration
-
-    // BaudRate is the duration between error calculations.
-    // The default BaudRate is 250ms.  The minimum BaudRate
-    // is 10ms.
-    BaudRate time.Duration
-
-    // Backoff is the duration that a circuit breaker is
-    // throttled.  The default Backoff is 1 minute.
-    // The minimum Backoff is 1 second.
-    BackOff time.Duration
-
-    // Window is the length of time checked for error
-    // calculation. The default Window is 5 minutes.
-    // The minimum Window is 5 seconds.
-    Window time.Duration
-
-    // Threshold is the maximum number of errors that
-    // can occur within the window before the circuit
-    // breaker opens. By default, one error will open
-    // the circuit breaker.
-    Threshold uint32
-
-    // LockOut is the length of time that a circuit breaker
-    // is forced open before attempting to throttle.
-    // If no lockout is provided, the circuit breaker will
-    // transition to a throttled state only after its error
-    // count is at or below the threshold.  While a circuit
-    // breaker is open, all requests are rejected and no
-    // new errors are recorded.
-    LockOut time.Duration
-
-    // OpeningWillResetErrors will cause the error count to reset
-    // when the circuit breaker opens.  If this is set true, all
-    // blocked calls will come from the throttled backoff, unless
-    // the circuit breaker has a lockout duration.
-    OpeningWillResetErrors bool
-
-    // IgnoreContext will prevent context cancellation to
-    // propagate to any in-flight Run functions.
-    IgnoreContext bool
-
-    // EstimationFunc is the function used to determine
-    // the chance of a request being throttled during the
-    // backoff period.  By default, Linear estimation is used.
-    EstimationFunc EstimationFunc
-
-    // PreProcessors are functions that execute in order before
-    // the Runner function is executed.  If a preprocessor
-    // returns an error, the execution is canceled and the error
-    // is returned from Run.
-    PreProcessors []PreProcessor
-
-    // PostProcessors are functions that execute in order after
-    // the Runner has executed.  The return values from the
-    // Runner are passed along to the first postprocessor.
-    // If there are subsequent postprocessors, each will take
-    // the return value of its predecessor.
-    PostProcessors []PostProcessor
-}
+```
+go get github.com/schigh/circuit
 ```
 
-```go
-breaker := circuit.NewBreaker(circuit.BreakerOptions{
-    Name:              "expensive_api_call",
-    Timeout:           5 * time.Second,
-    BackOff:           time.Minute,
-    Window:            time.Minute,
-    LockOut:           5 * time.Second,
-    EstimationFunc: circuit.Exponential,
-})
-```
+Requires Go 1.22+.
 
-> :warning: You **must** use `NewBreaker` to create circuit breakers.  
-> Instantiating the `Breaker` struct directly will cause all calls to `Run(...)`
-> to fail immediately
-
-### Running the circuit breaker
-
-You can run the circuit breaker by calling its `Run(...)` function.
-`Run` takes two parameters: a `context.Context` instance, and a function matching
-this signature:
+## Quick Start
 
 ```go
-func(context.Context) (interface{}, error)
-```
-
-```go
-breaker := circuit.NewBreaker(circuit.BreakerOptions{
-    Name:              "expensive_api_call",
-    Timeout:           5 * time.Second,
-    BackOff:           time.Minute,
-    Window:            time.Minute,
-    LockOut:           5 * time.Second,
-    EstimationFunc: circuit.Exponential,
-})
-
-// ...
-
-resultIface, err := breaker.Run(context.Background, func(ctx context.Context) (interface{}, error) {
-    // DoSomethingExpensive returns *ResultType, error
-    return dependency.DoSomethingExpensive()
-})
-
+b, err := circuit.NewBreaker(
+    circuit.WithName("my-api"),
+    circuit.WithThreshold(5),
+    circuit.WithWindow(time.Minute),
+    circuit.WithBackOff(30 * time.Second),
+)
 if err != nil {
-    // handle error
+    log.Fatal(err)
 }
-result, _ := resultIface.(*ResultType)
-// do something with result
-```
 
-The `error` returned from `Run` can take the following forms:
-
-| Error Kind                               | Description                                                     | Affects Error Count     |
-|--------------------------------------    |-------------------------------------------------------------    |---------------------    |
-| An error returned from your function     | An error from your implementation                               | Yes                     |
-| `circuit.TimeoutError`                   | Returned when `Run` times out before completion                 | Yes                     |
-| `circuit.StateOpenError`                 | Returned when the circuit breaker is open and/or locked out     | No                      |
-| `circuit.StateThrottledError`            | Returned when the circuit breaker is throttled                  | No                      |
-
-If the circuit breaker's `Timeout` setting is eclipsed while `Run` is executing,
-the context will cancel and `Run` will return `nil, circuit.TimeoutError`.
-The canceled context will propagate downstream to any logic that is listening for
-context cancellation.  If the `IgnoreContext` flag of `BreakerOptions` is set true,
-the context cancellation will _not_ propagate downstream.
-
-#### Preprocessing and Postprocessing
-
-You can intercept the parameters before invoking the Runner via preprocessors.
-Likewise, you can intercept the Runner's output before returning from `Run` via
-postprocessors.  Take the following example:
-
-```go
-type str string
-
-breaker := circuit.NewBreaker(circuit.BreakerOptions{
-    PreProcessors: []circuit.PreProcessor{
-        func(ctx context.Context, runner circuit.Runner) (context.Context, circuit.Runner, error) {
-            return context.WithValue(ctx, str("start"), time.Now().Unix()), runner, nil
-        },
-    },
-    PostProcessors: []circuit.PostProcessor{
-        func(ctx context.Context, i interface{}, err error) (interface{}, error) {
-            end := time.Now().Unix()
-            start, _ := ctx.Value(str("start")).(int64)
-            fmt.Printf("Run took %d seconds", end-start)
-
-            return i, err
-        },
-    }
+result, err := circuit.Run(b, ctx, func(ctx context.Context) (*Response, error) {
+    return client.Call(ctx, request)
 })
-
 ```
 
-The preprocessor intercepts the context and replaces it with a context with an added
-value.  The Runner executes, and then the postprocessor intercepts the context and
-extracts the value added in the preprocessor, which in this case is a time stamp.
+`Run` is generic — the return type is inferred from your function. No type assertions needed.
 
-The function signatures are as follows:
+## Table of Contents
+
+- [Creating Circuit Breakers](#creating-circuit-breakers)
+- [Running with Type Safety](#running-with-type-safety)
+- [Two-Step Mode (Allow/Done)](#two-step-mode-allowdone)
+- [Error Classification](#error-classification)
+- [State Transitions](#state-transitions)
+- [Lockout](#lockout)
+- [Backoff Strategies](#backoff-strategies)
+- [Observability](#observability)
+  - [State Change Notifications](#state-change-notifications)
+  - [Metrics Collection](#metrics-collection)
+  - [Snapshots](#snapshots)
+- [Managing Multiple Breakers](#managing-multiple-breakers)
+- [Panic Handling](#panic-handling)
+- [Configuration Reference](#configuration-reference)
+
+## Creating Circuit Breakers
+
+All breakers must be created with `NewBreaker`. It accepts functional options:
 
 ```go
-type PreProcessor func(context.Context, Runner) (context.Context, Runner, error)
+b, err := circuit.NewBreaker(
+    circuit.WithName("payment-gateway"),
+    circuit.WithTimeout(5 * time.Second),
+    circuit.WithThreshold(10),
+    circuit.WithWindow(2 * time.Minute),
+    circuit.WithBackOff(30 * time.Second),
+    circuit.WithLockOut(5 * time.Second),
+    circuit.WithEstimationFunc(circuit.Exponential),
+)
 ```
 
-```go
-type PostProcessor func(context.Context, interface{}, error) (interface{}, error)
-```
+If no name is provided, one is generated from the caller's file and line number. See [Configuration Reference](#configuration-reference) for all options and defaults.
 
-Preprocessors run _before_ the circuit breaker's state or the context is checked
-for fitness.  Preprocessors run in order, where the output `context.Context` and
-`circuit.Runner` are input to each subscquent preprocessor.
+## Running with Type Safety
 
-> :information_source: If any preprocessor returns a non-nil error, that error is
-> returned from `Run`.
->
-> :warning: The `Run` function will _always_ return an error if a canceled or deadlined
-> context is passed to the Runner.  If you want to override this behavior, you would
-> use a preprocessor.
-
-Postprocessors are executed in order after the Runner has returned a value, including
-if the circuit breaker has timed out.  Like preprocessors, postprocessors pass their
-output to the next postprocessor if there is one.  The final outputs are then returned
-from `Run`.
-
-### Transition States
-
-The state transitions for circuit breakers are as follows:
-
-| From          | To            | Description                                                                                                          |
-|-----------    |-----------    |------------------------------------------------------------------------------------------------------------------    |
-| New           | Closed        | The circuit breaker was just created                                                                                 |
-| Closed        | Open          | The number of errors returned from `Run` exceeded the threshold for the measurement window                           |
-| Open          | Throttled     | The circuit breaker's lockout has just expired (if set), and the number of errors is _at or below_ the threshold     |
-| Throttled     | Open          | The number of errors returned from `Run` exceeded the threshold for the measurement window                           |
-| Throttled     | Closed        | The backoff period has expired, and the number of errors is at or below the threshold                                |
-
-### LockOut
-
-When a circuit breaker opens, it can lock out for a specified duration.  During
-that time, all invocations of `Run` immediately return a `circuit.StateOpenError`,
-even if the error count has gone below the threshold.  By default, the lockout duration
-is 0.  It can be set with the `LockOut` property of the `BreakerOptions` struct.
-
-If there is no lockout set, the circuit breaker will transition from open to throttled
-as soon as the error count is at or below the threshold.  If you want to throttle
-immediately, set the `OpeningWillResetErrors` property of the `BreakerOptions` struct
-to true.  If `OpeningWillResetErrors` is used, the error count drops to zero immediately
-when the circuit breaker opens.
-
-> :warning: Take care when using the `OpeningWillResetErrors` flag.  If used in conjunction
-> with a short or no `LockOut`, the circuit breaker will cycle from open to throttled
-> with high frequency
-
-### Backoff Strategy
-
-When the circuit breaker enters the throttled state, it uses an estimation function
-to determine how frequently it will allow subsequent calls to `Run` to be executed.
-By default, the circuit breaker uses the `circuit.Linear` backoff strategy.
-
-The backoff strategy works by dividing the backoff duration into 100 units.  For
-each of those units `i in [1...100]`, the estimation function returns a probability
-score for `i` such that any call to `Run`will return a `circuit.StateThrottledError`.
-If the estimation function returns 100, **all** calls to `Run` return a throttling
-error.  If the estimation function returns 0, **no** calls to `Run` return a
-throttling error.
-
-#### Linear estimation (default)
-
-![Linear estimation](_img/linear.png)
-
-Linear estimation returns a probability inversely proportional to `i`.
-A circuit breaker will default to linear estimation if an estimation function
-is not provided in `BreakerOptions`.
-
-#### Logarithmic estimation
-
-![Logarithmic estimation](_img/logarithmic.png)
-
-Logarithmic estimation initially returns a high probability, and quickly decreases
-after half of the backoff duration has elapsed.
-
-#### Exponential estimation
-
-![Exponential estimation](_img/exponential.png)
-
-Exponential estimation will initially decrease probability rapidly and eases
-up after half of the backoff duration has elapsed.
-
-#### Ease-In-Out estimation
-
-![Ease-In-Out estimation](_img/easeinout.png)
-
-Ease-In-Out estimation will initially return a higher probability and quickly
-decrease as the backoff duration approaches its midpoint.  The rate of decrease
-will slow down shortly after the backoff midpoint has elapsed.
-
-> :warning: If a throttled circuit breaker reopens, the current backoff period is
-> discarded and will start over if the circuit breaker becomes throttled again.
-
-### Capturing circuit breaker state changes
-
-All circuit breaker state changes are exposed via a read-only channel.  You can
-access this channel by calling `StateChange()` on the circuit breaker:
+The `Run` function wraps your call with circuit breaker protection and returns a typed result:
 
 ```go
-breaker := circuit.NewBreaker(circuit.BreakerOptions{})
-changeChan := breaker.StateChange()
-
-go func(changeChan chan circuit.BreakerState) {
-    for {
-        select {
-        case state := <-changeChan:
-            doSomethingWith(state)
-        }
+user, err := circuit.Run(b, ctx, func(ctx context.Context) (*User, error) {
+    return userService.GetByID(ctx, userID)
+})
+if err != nil {
+    switch {
+    case errors.Is(err, circuit.ErrStateOpen):
+        // circuit is open — dependency is down
+        return cachedUser, nil
+    case errors.Is(err, circuit.ErrStateThrottled):
+        // circuit is recovering — request was shed
+        return nil, status.Error(codes.Unavailable, "service recovering")
+    case errors.Is(err, circuit.ErrTimeout):
+        // function exceeded the configured timeout
+        return nil, status.Error(codes.DeadlineExceeded, "upstream timeout")
+    default:
+        // error from your function
+        return nil, err
     }
-}(changeChan)
-
-```
-
-> :information_source: The breaker will not block if there's no receiver for the
-> channel returned from `StateChange()`.  However, this is the only way to detect
-> state changes from a circuit breaker.
-
-#### `BreakerState`
-
-The circuit breaker uses the `BreakerState` struct to communicate state changes:
-
-```go
-type BreakerState struct {
-    Name        string     `json:"string"`
-    State       State      `json:"state"`
-    ClosedSince *time.Time `json:"closed_since,omitempty"`
-    Opened      *time.Time `json:"opened,omitempty"`
-    LockoutEnds *time.Time `json:"lockout_ends,omitempty"`
-    Throttled   *time.Time `json:"throttled,omitempty"`
-    BackOffEnds *time.Time `json:"backoff_ends,omitempty"`
 }
 ```
 
-The properties of `BreakerState` will vary depending on the current state of the
-circuit breaker:
+The function is called **synchronously** — the caller controls concurrency. If a timeout is configured, it is applied via `context.WithTimeout`. The runner must respect `ctx.Done()` for timeouts to take effect.
 
-- `Name` and `State` are always set
-- `ClosedSince` is nil unless the state is `Closed`.  This value indicates when
-the circuit breaker was closed.
-- `Opened` is nil unless the state is `Open`.  This value indicates when the circuit
-breaker was opened.
-- `LockoutEnds` is nil unless the state is `Open` **and** the circuit breaker has
-a lockout duration set.  This value indicates when the current lockout period will
-end.
-- `Throttled` is nil unless the state is `Throttled`.  This value indicates when
-the circuit breaker entered the throttled state.
-- `BackOffEnds` is nil unless the state is `Throttled`.  This value indicates when
-the current backoff period will end.
+### Error Types
 
-> :information_source: The `State` property of `BreakerState` is an integer.  However,
-> when the circuit breaker state is serialized, its string value is used.
+| Error | Description | Affects Error Count |
+|-------|-------------|---------------------|
+| Your function's error | Returned as-is | Yes |
+| `circuit.ErrTimeout` | Context deadline exceeded | Yes |
+| `circuit.ErrStateOpen` | Circuit is open, request rejected | No |
+| `circuit.ErrStateThrottled` | Request shed during throttled recovery | No |
+| `circuit.ErrNotInitialized` | Breaker not created with `NewBreaker` | No |
 
-### Reading circuit breaker state
-
-There are a few ways you can examine a circuit breaker to see how it's getting along:
-
-#### `State()`
-
-If you only want the circuit breaker's current state, this is the function you want
-to use, as it's the least disruptive to the internal workings of the circuit breaker.
-`State()` returns a `circuit.State` value:
+All circuit errors carry context — use `errors.As` to extract the breaker name and state:
 
 ```go
-breaker := circuit.NewBreaker(circuit.BreakerOptions{})
-state := breaker.State()
-// do something with state
+var circErr circuit.Error
+if errors.As(err, &circErr) {
+    log.Printf("breaker=%s state=%s: %s", circErr.BreakerName, circErr.State, circErr.Error())
+}
 ```
 
-#### `Size()`
+## Two-Step Mode (Allow/Done)
 
-`Size()` returns the number of errors counted in the current window.  The primary
-usefullness of this function is to observe the decay rate for circuit breaker tuning:
+For HTTP middleware, gRPC interceptors, or any pattern where you don't wrap the call directly, use the two-step `Allow`/`done` pattern:
 
 ```go
-breaker := circuit.NewBreaker(circuit.BreakerOptions{})
+func CircuitBreakerMiddleware(b *circuit.Breaker) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            done, err := b.Allow(r.Context())
+            if err != nil {
+                http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+                return
+            }
 
-...
+            rec := &statusRecorder{ResponseWriter: w, status: 200}
+            next.ServeHTTP(rec, r)
 
-t := time.NewTicker(100 * time.Millisecond)
-go func(breaker *circuit.Breaker, t *time.Ticker){
-    for {
-        select {
-        case <-t.C:
-            _,_ = fmt.Fprintf(os.StdErr, "size: %d\n", breaker.Size())
+            // Report the outcome to the breaker
+            if rec.status >= 500 {
+                done(fmt.Errorf("HTTP %d", rec.status))
+            } else {
+                done(nil)
+            }
+        })
+    }
+}
+```
+
+`Allow` checks the breaker state and returns a `done` callback. Call `done(err)` after the operation completes to report the outcome. No timeout is applied — the caller controls timing.
+
+## Error Classification
+
+By default, any non-nil error counts as a failure. You can customize this with two callbacks:
+
+### Excluding Errors
+
+Excluded errors are not counted at all — neither as successes nor failures. Use this for errors that don't indicate dependency health:
+
+```go
+b, _ := circuit.NewBreaker(
+    circuit.WithName("user-api"),
+    circuit.WithIsExcluded(func(err error) bool {
+        // Don't count client cancellations against the dependency
+        return errors.Is(err, context.Canceled)
+    }),
+)
+```
+
+### Classifying Errors as Successes
+
+Some errors indicate the dependency is healthy but the request was rejected for business reasons:
+
+```go
+b, _ := circuit.NewBreaker(
+    circuit.WithName("inventory-api"),
+    circuit.WithIsSuccessful(func(err error) bool {
+        // 404 means the service is healthy, just no data
+        var httpErr *HTTPError
+        if errors.As(err, &httpErr) {
+            return httpErr.StatusCode == 404 || httpErr.StatusCode == 409
+        }
+        return false
+    }),
+)
+```
+
+The evaluation order is: `IsExcluded` → `IsSuccessful` → failure.
+
+## State Transitions
+
+Circuit breakers have three states:
+
+```
+         errors > threshold
+  Closed ──────────────────────► Open
+    ▲                              │
+    │                              │ lockout expires AND
+    │                              │ errors ≤ threshold
+    │                              ▼
+    └──────────────────────── Throttled
+       backoff expires AND
+       errors ≤ threshold
+```
+
+| From | To | Condition |
+|------|-----|-----------|
+| Closed | Open | Error count in window exceeds threshold |
+| Open | Throttled | Lockout expired (if set) and errors ≤ threshold |
+| Throttled | Open | Error count exceeds threshold during recovery |
+| Throttled | Closed | Backoff period expired and errors ≤ threshold |
+
+State evaluation is **lazy** — transitions happen when `Run`, `Allow`, `State`, or `Snapshot` is called. There are no background goroutines. A breaker with no traffic stays in its current state.
+
+## Lockout
+
+When a circuit breaker opens, it can lock out for a specified duration. During lockout, all requests are rejected with `ErrStateOpen`, even if the error count drops below the threshold.
+
+```go
+b, _ := circuit.NewBreaker(
+    circuit.WithName("fragile-service"),
+    circuit.WithThreshold(3),
+    circuit.WithLockOut(10 * time.Second),  // forced open for 10s after tripping
+)
+```
+
+If no lockout is set, the breaker transitions to throttled as soon as errors drop below the threshold. Combine with `WithOpeningResetsErrors(true)` for immediate throttling:
+
+```go
+b, _ := circuit.NewBreaker(
+    circuit.WithName("fast-recovery"),
+    circuit.WithThreshold(5),
+    circuit.WithOpeningResetsErrors(true),  // clear errors on open → immediate throttle
+    circuit.WithBackOff(15 * time.Second),
+)
+```
+
+## Backoff Strategies
+
+During the throttled state, the breaker probabilistically sheds requests using an estimation function. The backoff duration is divided into 100 ticks. At each tick, the function returns a probability (0–100) that a request should be blocked.
+
+### Built-in Strategies
+
+| Strategy | Behavior |
+|----------|----------|
+| `Linear` (default) | Steady decrease in blocking probability |
+| `Logarithmic` | High blocking initially, rapid decrease after midpoint |
+| `Exponential` | Rapid initial decrease, gradual easing |
+| `EaseInOut` | Smooth S-curve transition |
+| `JitteredLinear` | Linear with ±5 random jitter to prevent thundering herd |
+
+```go
+b, _ := circuit.NewBreaker(
+    circuit.WithName("api-gateway"),
+    circuit.WithBackOff(30 * time.Second),
+    circuit.WithEstimationFunc(circuit.Exponential),
+)
+```
+
+### Custom Strategies
+
+Implement your own `EstimationFunc`:
+
+```go
+// HalfOpen mimics a traditional half-open pattern:
+// block everything for the first half, then allow everything
+func HalfOpen(tick int) uint32 {
+    if tick <= 50 {
+        return 100 // block all
+    }
+    return 0 // allow all
+}
+
+b, _ := circuit.NewBreaker(
+    circuit.WithEstimationFunc(HalfOpen),
+)
+```
+
+## Observability
+
+### State Change Notifications
+
+Every breaker exposes a buffered channel for state change events:
+
+```go
+b, _ := circuit.NewBreaker(circuit.WithName("my-service"))
+
+go func() {
+    for state := range b.StateChange() {
+        log.Printf("breaker %s: %s", state.Name, state.State)
+        if state.Opened != nil {
+            log.Printf("  opened at: %s", state.Opened)
+        }
+        if state.LockoutEnds != nil {
+            log.Printf("  lockout ends: %s", state.LockoutEnds)
+        }
+        if state.BackOffEnds != nil {
+            log.Printf("  backoff ends: %s", state.BackOffEnds)
         }
     }
-}(breaker, t)
+}()
 ```
 
-#### `Snapshot()`
-
-`Snapshot()` will give you the same information that is made available during a
-state change event (a `BreakerState` struct).
-
-### Managing circuit breakers with `BreakerBox`
-
-Managing an individual circuit breaker is fairly simple, but it can quickly become
-tedious and verbose when you need to manage several circuit breakers at once.
-
-The `BreakerBox` allows you to easily manage multiple circuit breakers
-within your application.
-
-#### Create a breaker box and listen for state changes
-
-You should always create a new breaker box with `NewBreakerBox()`:
+Or use a callback for inline handling:
 
 ```go
-box := circuit.NewBreakerBox()
+b, _ := circuit.NewBreaker(
+    circuit.WithName("my-service"),
+    circuit.WithOnStateChange(func(name string, from, to circuit.State) {
+        log.Printf("breaker %s: %s → %s", name, from, to)
+        alerting.Notify(name, to)
+    }),
+)
 ```
 
-> :warning: Breaker boxes **must** be created with `NewBreakerBox`.  Creating a
-> breaker box any other way will cause your program to panic.
+The callback runs after the state mutex is released, so it does not block other requests.
 
-A breaker box exposes a read-only channel of `BreakerState` structs, just like a
-`Breaker` does.  If you're using the breaker box, you _don't_ want to listen for
-state changes on individual circuit breakers.  All circuit breaker state changes
-are funneled to the box state change channel, accessible via `StateChange()`:
+### Metrics Collection
+
+Implement the `MetricsCollector` interface for integration with Prometheus, StatsD, OpenTelemetry, etc.:
 
 ```go
-changeChan := box.StateChange()
+type prometheusCollector struct {
+    successes  *prometheus.CounterVec
+    errors     *prometheus.CounterVec
+    timeouts   *prometheus.CounterVec
+    rejected   *prometheus.CounterVec
+    excluded   *prometheus.CounterVec
+    duration   *prometheus.HistogramVec
+    transitions *prometheus.CounterVec
+}
 
-go func(changeChan chan circuit.BreakerState) {
-    for {
-        select {
-        case state := <-changeChan:
-            doSomethingWith(state)
+func (p *prometheusCollector) RecordSuccess(name string, d time.Duration) {
+    p.successes.WithLabelValues(name).Inc()
+    p.duration.WithLabelValues(name, "success").Observe(d.Seconds())
+}
+
+func (p *prometheusCollector) RecordError(name string, d time.Duration, err error) {
+    p.errors.WithLabelValues(name, errorType(err)).Inc()
+    p.duration.WithLabelValues(name, "error").Observe(d.Seconds())
+}
+
+func (p *prometheusCollector) RecordTimeout(name string) {
+    p.timeouts.WithLabelValues(name).Inc()
+}
+
+func (p *prometheusCollector) RecordStateChange(name string, from, to circuit.State) {
+    p.transitions.WithLabelValues(name, from.String(), to.String()).Inc()
+}
+
+func (p *prometheusCollector) RecordRejected(name string, state circuit.State) {
+    p.rejected.WithLabelValues(name, state.String()).Inc()
+}
+
+func (p *prometheusCollector) RecordExcluded(name string, err error) {
+    p.excluded.WithLabelValues(name, errorType(err)).Inc()
+}
+```
+
+```go
+b, _ := circuit.NewBreaker(
+    circuit.WithName("payment-api"),
+    circuit.WithMetrics(&prometheusCollector{...}),
+)
+```
+
+The `RecordError` method includes the error itself, enabling classification by error type in dashboards.
+
+### Snapshots
+
+Get a point-in-time snapshot of the breaker's state with timing information:
+
+```go
+snap := b.Snapshot()
+fmt.Printf("State: %s\n", snap.State)
+
+// Expose as a health check endpoint
+func healthHandler(b *circuit.Breaker) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        snap := b.Snapshot()
+        w.Header().Set("Content-Type", "application/json")
+        if snap.State == circuit.Open {
+            w.WriteHeader(http.StatusServiceUnavailable)
         }
+        json.NewEncoder(w).Encode(snap)
     }
-}(changeChan)
+}
 ```
 
-#### Getting and setting circuit breakers
+Other accessors:
 
-The most efficient way to get a circuit breaker is to use `LoadOrCreate`:
+```go
+b.Name()   // returns the breaker's name
+b.State()  // returns the current state (triggers lazy evaluation)
+b.Size()   // returns the number of errors in the current window
+```
+
+## Managing Multiple Breakers
+
+Use `BreakerBox` to manage breakers for multiple dependencies:
 
 ```go
 box := circuit.NewBreakerBox()
 
-// ...
+// Create breakers for each dependency
+userBreaker, _ := box.Create(
+    circuit.WithName("user-service"),
+    circuit.WithThreshold(5),
+)
+orderBreaker, _ := box.Create(
+    circuit.WithName("order-service"),
+    circuit.WithThreshold(10),
+)
 
-breaker, err := box.LoadOrCreate(circuit.BreakerOptions{
-    Name: "more_cowbell_cb",
-})
-if err != nil {
-    // handle error
+// All state changes are forwarded to the box channel with full timing info
+go func() {
+    for state := range box.StateChange() {
+        log.Printf("[%s] %s", state.Name, state.State)
+    }
+}()
+
+// Load a breaker by name
+if b := box.Load("user-service"); b != nil {
+    result, err := circuit.Run(b, ctx, func(ctx context.Context) (*User, error) {
+        return userClient.Get(ctx, id)
+    })
 }
-
-// ...
-
-result, err := breaker.Run(context.Background(), func(ctx context.Context) (interface{}, error) {
-    // needMoreCowbell returns interface{}, error
-    return needMoreCowbell()
-})
-
-// ...
 ```
 
-If the circuit breaker already exists, it is returned, and the error will be nil.
-Otherwise, `LoadOrCreate` will make a new circuit breaker using the supplied options.
+### LoadOrCreate
 
-> :warning: Circuit breakers created by the breaker box **must** have an
-> explicitly-created name, unlike a standalone circuit breaker.  If no name is
-> provided, `UnnamedBreakerError` is returned
+For lazy initialization in request handlers — safe for concurrent use:
 
-#### Other box functions
+```go
+func (s *Server) GetUser(ctx context.Context, id string) (*User, error) {
+    b, err := s.box.LoadOrCreate("user-service",
+        circuit.WithThreshold(5),
+        circuit.WithBackOff(30 * time.Second),
+    )
+    if err != nil {
+        return nil, err
+    }
 
-##### `Load(name string)`
+    return circuit.Run(b, ctx, func(ctx context.Context) (*User, error) {
+        return s.userClient.Get(ctx, id)
+    })
+}
+```
 
-`Load` will return a circuit breaker by name if it exists, and `nil` otherwise
+`LoadOrCreate` is safe for concurrent callers — only one breaker is created per name.
 
-##### `Create(opts BreakerOptions)`
+### AddBYO
 
-`Create` will create a new circuit breaker with the supplied options and return
-it.  If a circuit breaker with the same name already exists, it will be overwritten.
-Just as in `LoadOrCreate`, the `Name` option must be set for the new circuit breaker.
+Add externally-created breakers to the box for storage/retrieval. State changes from BYO breakers are **not** forwarded to the box channel:
 
-##### `AddBYO(b *Breaker)`
+```go
+b, _ := circuit.NewBreaker(circuit.WithName("custom"))
+err := box.AddBYO(b)
+```
 
-`AddBYO` allows you to create circuit breakers outside of the breaker box and then
-use the box for storage and retrieval.  However, circuit breakers added via `AddBYO`
-will **not** report their state changes to the breaker box, so you will need to manage
-those state changes yourself.
+## Panic Handling
 
----
+If the function passed to `Run` panics, the panic is:
+1. Recorded as a failure (incrementing the error count)
+2. Re-raised so the caller's recovery logic can handle it
 
-## Tuning circuit breakers
+```go
+defer func() {
+    if r := recover(); r != nil {
+        log.Printf("caught panic: %v", r)
+    }
+}()
 
-wip
+circuit.Run(b, ctx, func(ctx context.Context) (string, error) {
+    panic("something went wrong")
+})
+```
+
+## Configuration Reference
+
+| Option | Default | Minimum | Description |
+|--------|---------|---------|-------------|
+| `WithName(s)` | auto-generated | — | Breaker identifier |
+| `WithTimeout(d)` | 10s | — | Context timeout applied to `Run` |
+| `WithThreshold(n)` | 0 (opens on first error) | — | Max errors in window before opening |
+| `WithWindow(d)` | 5m | 10ms | Sliding window for error counting |
+| `WithBackOff(d)` | 1m | 10ms | Duration of throttled recovery |
+| `WithLockOut(d)` | 0 (no lockout) | — | Forced-open duration before throttling |
+| `WithEstimationFunc(f)` | `Linear` | — | Throttle probability curve |
+| `WithOpeningResetsErrors(v)` | `false` | — | Clear error count when opening |
+| `WithIsSuccessful(fn)` | `nil` | — | Classify errors as successes |
+| `WithIsExcluded(fn)` | `nil` | — | Exclude errors from tracking |
+| `WithMetrics(m)` | `nil` | — | Metrics collector implementation |
+| `WithOnStateChange(fn)` | `nil` | — | State transition callback |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
