@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>circuit - A highly-tunable circuit breaker for Go</title>
+  <meta name="description" content="Circuit implements the circuit breaker design pattern with gradual recovery via probabilistic throttling, type-safe generics, and zero background goroutines.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #161822;
+      --surface-2: #1c1f2e;
+      --border: #2a2d3e;
+      --text: #e1e4ed;
+      --text-muted: #8b8fa7;
+      --accent: #f5c518;
+      --accent-dim: rgba(245, 197, 24, 0.12);
+      --code-bg: #1a1d2e;
+      --link: #6ea8fe;
+      --success: #4ade80;
+      --error: #f87171;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      font-size: 16px;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    code, pre {
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.875rem;
+    }
+
+    code {
+      background: var(--code-bg);
+      padding: 0.15em 0.4em;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      line-height: 1.6;
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      font-size: 0.875rem;
+    }
+
+    /* Header */
+    .hero {
+      text-align: center;
+      padding: 5rem 1.5rem 4rem;
+      background: linear-gradient(180deg, #13152000 0%, var(--bg) 100%),
+                  radial-gradient(ellipse at 50% 0%, rgba(245, 197, 24, 0.06) 0%, transparent 70%);
+    }
+
+    .hero img {
+      max-width: 280px;
+      height: auto;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero .tagline {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      max-width: 600px;
+      margin: 0 auto 2rem;
+    }
+
+    .hero .install {
+      display: inline-block;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1.5rem;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.95rem;
+      color: var(--accent);
+      user-select: all;
+      cursor: text;
+    }
+
+    .badges {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      margin-top: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .badge strong { color: var(--text); font-weight: 500; }
+
+    /* Features strip */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 0 1.5rem 4rem;
+    }
+
+    .feature {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem 1.5rem;
+    }
+
+    .feature h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+      color: var(--accent);
+    }
+
+    .feature p {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Nav */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(15, 17, 23, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1.5rem;
+    }
+
+    .nav-inner {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+      height: 3rem;
+      overflow-x: auto;
+    }
+
+    .nav a {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      white-space: nowrap;
+      transition: color 0.15s;
+    }
+
+    .nav a:hover { color: var(--text); text-decoration: none; }
+
+    /* Content */
+    .content {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 6rem;
+    }
+
+    .content section {
+      margin-bottom: 4rem;
+    }
+
+    .content h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .content h3 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin: 2rem 0 0.75rem;
+    }
+
+    .content h4 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 1.5rem 0 0.5rem;
+      color: var(--accent);
+    }
+
+    .content p {
+      margin-bottom: 1rem;
+    }
+
+    .content ul, .content ol {
+      margin-bottom: 1rem;
+      padding-left: 1.5rem;
+    }
+
+    .content li { margin-bottom: 0.35rem; }
+
+    .content pre { margin-bottom: 1.5rem; }
+
+    .content img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      margin: 0.5rem 0 1rem;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1.5rem;
+      font-size: 0.875rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--border);
+    }
+
+    th {
+      background: var(--surface);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    td { background: var(--surface-2); }
+
+    /* State diagram */
+    .state-diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2rem;
+      margin: 1.5rem 0;
+      text-align: center;
+    }
+
+    .state-diagram svg {
+      max-width: 500px;
+      width: 100%;
+    }
+
+    /* API cards */
+    .api-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+
+    .api-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+    }
+
+    .api-card h4 {
+      margin: 0 0 0.5rem;
+      color: var(--accent);
+      font-size: 0.9rem;
+    }
+
+    .api-card p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .api-card code {
+      font-size: 0.8rem;
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 2rem 1.5rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    /* Syntax highlighting */
+    .kw { color: #c792ea; }
+    .fn { color: #82aaff; }
+    .st { color: #c3e88d; }
+    .cm { color: #546e7a; }
+    .ty { color: #ffcb6b; }
+    .nu { color: #f78c6c; }
+    .op { color: #89ddff; }
+
+    /* Responsive */
+    @media (max-width: 640px) {
+      .hero { padding: 3rem 1rem 2.5rem; }
+      .hero img { max-width: 200px; }
+      .hero .tagline { font-size: 1.1rem; }
+      .content { padding: 2rem 1rem 4rem; }
+      .features { padding: 0 1rem 3rem; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="hero">
+  <img src="logo.png" alt="circuit">
+  <p class="tagline">
+    A highly-tunable circuit breaker for Go with gradual recovery via probabilistic
+    throttling, type-safe generics, and zero background goroutines.
+  </p>
+  <div class="install">go get github.com/schigh/circuit</div>
+  <div class="badges">
+    <span class="badge"><strong>Go 1.22+</strong></span>
+    <span class="badge"><strong>Generics</strong></span>
+    <span class="badge"><strong>Zero goroutines</strong></span>
+    <span class="badge"><strong>MIT</strong></span>
+  </div>
+</div>
+
+<div class="features">
+  <div class="feature">
+    <h3>Type-Safe Generics</h3>
+    <p>Return types are inferred from your function. No type assertions or empty interfaces.</p>
+  </div>
+  <div class="feature">
+    <h3>Probabilistic Throttling</h3>
+    <p>Gradual recovery with 5 built-in backoff curves. Backoff is divided into 100 ticks for smooth probability transitions.</p>
+  </div>
+  <div class="feature">
+    <h3>Lazy Evaluation</h3>
+    <p>No background goroutines. State transitions happen on access. Idle breakers cost nothing.</p>
+  </div>
+  <div class="feature">
+    <h3>Full Observability</h3>
+    <p>Buffered state change channels, MetricsCollector interface, JSON-serializable snapshots, and inline callbacks.</p>
+  </div>
+</div>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#quick-start">Quick Start</a>
+    <a href="#type-safety">Type Safety</a>
+    <a href="#two-step">Two-Step Mode</a>
+    <a href="#error-classification">Error Classification</a>
+    <a href="#state-transitions">State Transitions</a>
+    <a href="#lockout">Lockout</a>
+    <a href="#backoff">Backoff Strategies</a>
+    <a href="#observability">Observability</a>
+    <a href="#breaker-box">BreakerBox</a>
+    <a href="#api-reference">API Reference</a>
+    <a href="#config">Config</a>
+  </div>
+</nav>
+
+<div class="content">
+
+  <!-- Quick Start -->
+  <section id="quick-start">
+    <h2>Quick Start</h2>
+    <pre><code><span class="cm">// Create a breaker with functional options</span>
+b, err := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"my-api"</span>),
+    circuit.<span class="fn">WithThreshold</span>(<span class="nu">5</span>),
+    circuit.<span class="fn">WithWindow</span>(time.Minute),
+    circuit.<span class="fn">WithBackOff</span>(<span class="nu">30</span> * time.Second),
+)
+<span class="kw">if</span> err != <span class="kw">nil</span> {
+    log.<span class="fn">Fatal</span>(err)
+}
+
+<span class="cm">// Run is generic &mdash; return type is inferred from your function</span>
+result, err := circuit.<span class="fn">Run</span>(b, ctx, <span class="kw">func</span>(ctx context.Context) (*Response, <span class="ty">error</span>) {
+    <span class="kw">return</span> client.<span class="fn">Call</span>(ctx, request)
+})</code></pre>
+    <p>The function is called <strong>synchronously</strong> &mdash; the caller controls concurrency. If a timeout is configured, it is applied via <code>context.WithTimeout</code>. The runner must respect <code>ctx.Done()</code> for timeouts to take effect.</p>
+  </section>
+
+  <!-- Type Safety -->
+  <section id="type-safety">
+    <h2>Running with Type Safety</h2>
+    <pre><code>user, err := circuit.<span class="fn">Run</span>(b, ctx, <span class="kw">func</span>(ctx context.Context) (*User, <span class="ty">error</span>) {
+    <span class="kw">return</span> userService.<span class="fn">GetByID</span>(ctx, userID)
+})
+<span class="kw">if</span> err != <span class="kw">nil</span> {
+    <span class="kw">switch</span> {
+    <span class="kw">case</span> errors.<span class="fn">Is</span>(err, circuit.ErrStateOpen):
+        <span class="cm">// circuit is open &mdash; dependency is down</span>
+        <span class="kw">return</span> cachedUser, <span class="kw">nil</span>
+    <span class="kw">case</span> errors.<span class="fn">Is</span>(err, circuit.ErrStateThrottled):
+        <span class="cm">// circuit is recovering &mdash; request was shed</span>
+        <span class="kw">return</span> <span class="kw">nil</span>, status.<span class="fn">Error</span>(codes.Unavailable, <span class="st">"service recovering"</span>)
+    <span class="kw">case</span> errors.<span class="fn">Is</span>(err, circuit.ErrTimeout):
+        <span class="cm">// function exceeded the configured timeout</span>
+        <span class="kw">return</span> <span class="kw">nil</span>, status.<span class="fn">Error</span>(codes.DeadlineExceeded, <span class="st">"upstream timeout"</span>)
+    <span class="kw">default</span>:
+        <span class="kw">return</span> <span class="kw">nil</span>, err
+    }
+}</code></pre>
+
+    <h3>Error Types</h3>
+    <table>
+      <thead>
+        <tr><th>Error</th><th>Description</th><th>Affects Error Count</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Your function's error</td><td>Returned as-is</td><td>Yes</td></tr>
+        <tr><td><code>ErrTimeout</code></td><td>Context deadline exceeded (converted from <code>context.DeadlineExceeded</code>)</td><td>Yes</td></tr>
+        <tr><td><code>ErrStateOpen</code></td><td>Circuit is open, request rejected</td><td>No</td></tr>
+        <tr><td><code>ErrStateThrottled</code></td><td>Request shed during throttled recovery</td><td>No</td></tr>
+        <tr><td><code>ErrNotInitialized</code></td><td>Breaker not created with <code>NewBreaker</code></td><td>No</td></tr>
+        <tr><td><code>ErrUnnamedBreaker</code></td><td>Breaker added to BreakerBox without a name</td><td>No</td></tr>
+      </tbody>
+    </table>
+
+    <p>All circuit errors carry context &mdash; use <code>errors.As</code> to extract the breaker name and state. The <code>Error.Is()</code> method compares the base message only, ignoring context fields:</p>
+    <pre><code><span class="kw">var</span> circErr circuit.Error
+<span class="kw">if</span> errors.<span class="fn">As</span>(err, &amp;circErr) {
+    log.<span class="fn">Printf</span>(<span class="st">"breaker=%s state=%s: %s"</span>, circErr.BreakerName, circErr.State, circErr.<span class="fn">Error</span>())
+}</code></pre>
+  </section>
+
+  <!-- Two-Step Mode -->
+  <section id="two-step">
+    <h2>Two-Step Mode (Allow/Done)</h2>
+    <p>For HTTP middleware, gRPC interceptors, or any pattern where you don't wrap the call directly:</p>
+    <pre><code><span class="kw">func</span> <span class="fn">CircuitBreakerMiddleware</span>(b *circuit.Breaker) <span class="kw">func</span>(http.Handler) http.Handler {
+    <span class="kw">return func</span>(next http.Handler) http.Handler {
+        <span class="kw">return</span> http.<span class="fn">HandlerFunc</span>(<span class="kw">func</span>(w http.ResponseWriter, r *http.Request) {
+            done, err := b.<span class="fn">Allow</span>(r.<span class="fn">Context</span>())
+            <span class="kw">if</span> err != <span class="kw">nil</span> {
+                http.<span class="fn">Error</span>(w, <span class="st">"service unavailable"</span>, http.StatusServiceUnavailable)
+                <span class="kw">return</span>
+            }
+
+            rec := &amp;statusRecorder{ResponseWriter: w, status: <span class="nu">200</span>}
+            next.<span class="fn">ServeHTTP</span>(rec, r)
+
+            <span class="cm">// Report the outcome to the breaker</span>
+            <span class="kw">if</span> rec.status >= <span class="nu">500</span> {
+                <span class="fn">done</span>(fmt.<span class="fn">Errorf</span>(<span class="st">"HTTP %d"</span>, rec.status))
+            } <span class="kw">else</span> {
+                <span class="fn">done</span>(<span class="kw">nil</span>)
+            }
+        })
+    }
+}</code></pre>
+    <p><code>Allow</code> checks the breaker state and returns a <code>done</code> callback. Call <code>done(err)</code> after the operation to report the outcome. No timeout is applied &mdash; the caller controls timing.</p>
+  </section>
+
+  <!-- Error Classification -->
+  <section id="error-classification">
+    <h2>Error Classification</h2>
+    <p>By default, any non-nil error counts as a failure. Customize with two callbacks:</p>
+
+    <h3>Excluding Errors</h3>
+    <p>Excluded errors are not counted at all &mdash; neither as successes nor failures:</p>
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"user-api"</span>),
+    circuit.<span class="fn">WithIsExcluded</span>(<span class="kw">func</span>(err <span class="ty">error</span>) <span class="ty">bool</span> {
+        <span class="cm">// Don't count client cancellations against the dependency</span>
+        <span class="kw">return</span> errors.<span class="fn">Is</span>(err, context.Canceled)
+    }),
+)</code></pre>
+
+    <h3>Classifying Errors as Successes</h3>
+    <p>Some errors indicate the dependency is healthy but the request was rejected:</p>
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"inventory-api"</span>),
+    circuit.<span class="fn">WithIsSuccessful</span>(<span class="kw">func</span>(err <span class="ty">error</span>) <span class="ty">bool</span> {
+        <span class="kw">var</span> httpErr *HTTPError
+        <span class="kw">if</span> errors.<span class="fn">As</span>(err, &amp;httpErr) {
+            <span class="kw">return</span> httpErr.StatusCode == <span class="nu">404</span> || httpErr.StatusCode == <span class="nu">409</span>
+        }
+        <span class="kw">return false</span>
+    }),
+)</code></pre>
+    <p>Evaluation order: <code>IsExcluded</code> &rarr; <code>IsSuccessful</code> &rarr; failure.</p>
+  </section>
+
+  <!-- State Transitions -->
+  <section id="state-transitions">
+    <h2>State Transitions</h2>
+
+    <div class="state-diagram">
+      <svg viewBox="0 0 500 280" xmlns="http://www.w3.org/2000/svg">
+        <!-- Closed -->
+        <rect x="20" y="110" width="120" height="50" rx="25" fill="none" stroke="#4ade80" stroke-width="2"/>
+        <text x="80" y="140" text-anchor="middle" fill="#4ade80" font-family="Inter, sans-serif" font-size="15" font-weight="600">Closed</text>
+        <!-- Open -->
+        <rect x="360" y="110" width="120" height="50" rx="25" fill="none" stroke="#f87171" stroke-width="2"/>
+        <text x="420" y="140" text-anchor="middle" fill="#f87171" font-family="Inter, sans-serif" font-size="15" font-weight="600">Open</text>
+        <!-- Throttled -->
+        <rect x="190" y="210" width="120" height="50" rx="25" fill="none" stroke="#f5c518" stroke-width="2"/>
+        <text x="250" y="240" text-anchor="middle" fill="#f5c518" font-family="Inter, sans-serif" font-size="15" font-weight="600">Throttled</text>
+        <!-- Closed -> Open -->
+        <line x1="140" y1="130" x2="355" y2="130" stroke="#8b8fa7" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="248" y="120" text-anchor="middle" fill="#8b8fa7" font-family="Inter, sans-serif" font-size="10">errors &gt; threshold</text>
+        <!-- Open -> Throttled -->
+        <line x1="380" y1="160" x2="315" y2="212" stroke="#8b8fa7" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="380" y="200" text-anchor="start" fill="#8b8fa7" font-family="Inter, sans-serif" font-size="10">lockout expires</text>
+        <!-- Throttled -> Closed -->
+        <line x1="190" y1="230" x2="120" y2="160" stroke="#8b8fa7" stroke-width="1.5" marker-end="url(#arrow)"/>
+        <text x="110" y="210" text-anchor="end" fill="#8b8fa7" font-family="Inter, sans-serif" font-size="10">backoff expires</text>
+        <!-- Throttled -> Open (re-trip) -->
+        <line x1="310" y1="225" x2="375" y2="160" stroke="#8b8fa7" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+        <text x="375" y="225" text-anchor="start" fill="#546e7a" font-family="Inter, sans-serif" font-size="10">re-trip</text>
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b8fa7"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>From</th><th>To</th><th>Condition</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Closed</td><td>Open</td><td>Error count in window exceeds threshold</td></tr>
+        <tr><td>Open</td><td>Throttled</td><td>Lockout expired (if set) and errors &le; threshold</td></tr>
+        <tr><td>Throttled</td><td>Open</td><td>Error count exceeds threshold during recovery</td></tr>
+        <tr><td>Throttled</td><td>Closed</td><td>Backoff period expired and errors &le; threshold</td></tr>
+      </tbody>
+    </table>
+    <p>State evaluation is <strong>lazy</strong> &mdash; transitions happen when <code>Run</code>, <code>Allow</code>, <code>State()</code>, or <code>Snapshot()</code> is called. There are no background goroutines. A breaker with no traffic stays in its current state indefinitely.</p>
+  </section>
+
+  <!-- Lockout -->
+  <section id="lockout">
+    <h2>Lockout</h2>
+    <p>When a circuit breaker opens, it can lock out for a specified duration. During lockout, all requests are rejected with <code>ErrStateOpen</code>, even if the error count drops below the threshold.</p>
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"fragile-service"</span>),
+    circuit.<span class="fn">WithThreshold</span>(<span class="nu">3</span>),
+    circuit.<span class="fn">WithLockOut</span>(<span class="nu">10</span> * time.Second),
+)</code></pre>
+    <p>If no lockout is set, the breaker transitions to throttled as soon as errors drop below the threshold. Combine with <code>WithOpeningResetsErrors(true)</code> for immediate throttling:</p>
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"fast-recovery"</span>),
+    circuit.<span class="fn">WithThreshold</span>(<span class="nu">5</span>),
+    circuit.<span class="fn">WithOpeningResetsErrors</span>(<span class="kw">true</span>),  <span class="cm">// clear errors on open &rarr; immediate throttle</span>
+    circuit.<span class="fn">WithBackOff</span>(<span class="nu">15</span> * time.Second),
+)</code></pre>
+  </section>
+
+  <!-- Backoff Strategies -->
+  <section id="backoff">
+    <h2>Backoff Strategies</h2>
+    <p>During the throttled state, the breaker probabilistically sheds requests using an <code>EstimationFunc</code>. The backoff duration is divided into 100 ticks. At each tick, the function returns a probability (0&ndash;100) that a request should be blocked.</p>
+
+    <pre><code><span class="cm">// EstimationFunc takes a tick [1-100] and returns</span>
+<span class="cm">// the blocking probability [0-100]</span>
+<span class="kw">type</span> <span class="ty">EstimationFunc</span> <span class="kw">func</span>(<span class="ty">int</span>) <span class="ty">uint32</span>
+
+b, _ := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"api-gateway"</span>),
+    circuit.<span class="fn">WithBackOff</span>(<span class="nu">30</span> * time.Second),
+    circuit.<span class="fn">WithEstimationFunc</span>(circuit.Exponential),
+)</code></pre>
+
+    <h4>Linear (default)</h4>
+    <p>Steady, proportional decrease in blocking probability. Returns <code>100 - tick</code>.</p>
+    <img src="linear.png" alt="Linear estimation curve">
+
+    <h4>Logarithmic</h4>
+    <p>High blocking initially, rapid decrease after the midpoint. Uses a pre-computed curve.</p>
+    <img src="logarithmic.png" alt="Logarithmic estimation curve">
+
+    <h4>Exponential</h4>
+    <p>Rapid initial decrease, gradual easing toward full throughput. Uses a pre-computed curve.</p>
+    <img src="exponential.png" alt="Exponential estimation curve">
+
+    <h4>Ease-In-Out</h4>
+    <p>Smooth S-curve &mdash; high blocking early, steep drop at midpoint, gentle finish. Uses a pre-computed curve.</p>
+    <img src="easeinout.png" alt="Ease-In-Out estimation curve">
+
+    <h4>JitteredLinear</h4>
+    <p>Linear with &plusmn;5 random jitter to prevent thundering herd effects during recovery.</p>
+
+    <h3>Custom Strategies</h3>
+    <p>Implement your own <code>EstimationFunc</code>:</p>
+    <pre><code><span class="cm">// HalfOpen mimics a traditional half-open pattern:
+// block everything for the first half, then allow everything</span>
+<span class="kw">func</span> <span class="fn">HalfOpen</span>(tick <span class="ty">int</span>) <span class="ty">uint32</span> {
+    <span class="kw">if</span> tick <= <span class="nu">50</span> {
+        <span class="kw">return</span> <span class="nu">100</span> <span class="cm">// block all</span>
+    }
+    <span class="kw">return</span> <span class="nu">0</span> <span class="cm">// allow all</span>
+}</code></pre>
+  </section>
+
+  <!-- Observability -->
+  <section id="observability">
+    <h2>Observability</h2>
+
+    <h3>State Change Notifications</h3>
+    <p>Every breaker exposes a 16-element buffered channel for state change events. Events include full timing information via the <code>BreakerState</code> struct:</p>
+    <pre><code><span class="kw">type</span> <span class="ty">BreakerState</span> <span class="kw">struct</span> {
+    Name        <span class="ty">string</span>     <span class="st">`json:"name"`</span>
+    State       <span class="ty">State</span>      <span class="st">`json:"state"`</span>
+    ClosedSince *<span class="ty">time.Time</span> <span class="st">`json:"closed_since,omitempty"`</span>
+    Opened      *<span class="ty">time.Time</span> <span class="st">`json:"opened,omitempty"`</span>
+    LockoutEnds *<span class="ty">time.Time</span> <span class="st">`json:"lockout_ends,omitempty"`</span>
+    Throttled   *<span class="ty">time.Time</span> <span class="st">`json:"throttled,omitempty"`</span>
+    BackOffEnds *<span class="ty">time.Time</span> <span class="st">`json:"backoff_ends,omitempty"`</span>
+}</code></pre>
+
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(circuit.<span class="fn">WithName</span>(<span class="st">"my-service"</span>))
+
+<span class="kw">go func</span>() {
+    <span class="kw">for</span> state := <span class="kw">range</span> b.<span class="fn">StateChange</span>() {
+        log.<span class="fn">Printf</span>(<span class="st">"breaker %s: %s"</span>, state.Name, state.State)
+    }
+}()</code></pre>
+
+    <p>Or use a callback for inline handling. The callback runs after the state mutex is released, so it does not block other requests:</p>
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"my-service"</span>),
+    circuit.<span class="fn">WithOnStateChange</span>(<span class="kw">func</span>(name <span class="ty">string</span>, from, to circuit.State) {
+        log.<span class="fn">Printf</span>(<span class="st">"breaker %s: %s -> %s"</span>, name, from, to)
+    }),
+)</code></pre>
+
+    <h3>Metrics Collection</h3>
+    <p>Implement the <code>MetricsCollector</code> interface for Prometheus, StatsD, OpenTelemetry, etc. All methods must be safe for concurrent use:</p>
+    <pre><code><span class="kw">type</span> <span class="ty">MetricsCollector</span> <span class="kw">interface</span> {
+    <span class="fn">RecordSuccess</span>(breakerName <span class="ty">string</span>, duration <span class="ty">time.Duration</span>)
+    <span class="fn">RecordError</span>(breakerName <span class="ty">string</span>, duration <span class="ty">time.Duration</span>, err <span class="ty">error</span>)
+    <span class="fn">RecordTimeout</span>(breakerName <span class="ty">string</span>)
+    <span class="fn">RecordStateChange</span>(breakerName <span class="ty">string</span>, from, to <span class="ty">State</span>)
+    <span class="fn">RecordRejected</span>(breakerName <span class="ty">string</span>, state <span class="ty">State</span>)
+    <span class="fn">RecordExcluded</span>(breakerName <span class="ty">string</span>, err <span class="ty">error</span>)
+}</code></pre>
+
+    <p><code>RecordError</code> includes the error itself, enabling classification by error type in dashboards.</p>
+
+    <h3>Snapshots</h3>
+    <p>Get a JSON-serializable point-in-time snapshot. Both <code>State</code> and <code>BreakerState</code> implement <code>MarshalJSON</code>/<code>UnmarshalJSON</code>:</p>
+    <pre><code><span class="cm">// Expose as a health check endpoint</span>
+<span class="kw">func</span> <span class="fn">healthHandler</span>(b *circuit.Breaker) http.HandlerFunc {
+    <span class="kw">return func</span>(w http.ResponseWriter, r *http.Request) {
+        snap := b.<span class="fn">Snapshot</span>()
+        w.Header().<span class="fn">Set</span>(<span class="st">"Content-Type"</span>, <span class="st">"application/json"</span>)
+        <span class="kw">if</span> snap.State == circuit.Open {
+            w.<span class="fn">WriteHeader</span>(http.StatusServiceUnavailable)
+        }
+        json.<span class="fn">NewEncoder</span>(w).<span class="fn">Encode</span>(snap)
+    }
+}</code></pre>
+  </section>
+
+  <!-- BreakerBox -->
+  <section id="breaker-box">
+    <h2>Managing Multiple Breakers</h2>
+    <p>Use <code>BreakerBox</code> to manage breakers for multiple dependencies. It uses <code>sync.Map</code> internally for thread-safe storage:</p>
+    <pre><code>box := circuit.<span class="fn">NewBreakerBox</span>()
+
+userBreaker, _ := box.<span class="fn">Create</span>(
+    circuit.<span class="fn">WithName</span>(<span class="st">"user-service"</span>),
+    circuit.<span class="fn">WithThreshold</span>(<span class="nu">5</span>),
+)
+
+<span class="cm">// All state changes from Create'd breakers are forwarded to the box channel</span>
+<span class="kw">go func</span>() {
+    <span class="kw">for</span> state := <span class="kw">range</span> box.<span class="fn">StateChange</span>() {
+        log.<span class="fn">Printf</span>(<span class="st">"[%s] %s"</span>, state.Name, state.State)
+    }
+}()</code></pre>
+
+    <h3>LoadOrCreate</h3>
+    <p>Lazy initialization in request handlers &mdash; safe for concurrent callers. A <code>sync.Mutex</code> serializes creation to prevent TOCTOU races, so only one breaker is ever created per name:</p>
+    <pre><code>b, err := s.box.<span class="fn">LoadOrCreate</span>(<span class="st">"user-service"</span>,
+    circuit.<span class="fn">WithThreshold</span>(<span class="nu">5</span>),
+    circuit.<span class="fn">WithBackOff</span>(<span class="nu">30</span> * time.Second),
+)</code></pre>
+
+    <h3>AddBYO</h3>
+    <p>Add externally-created breakers to the box for storage and retrieval. State changes from BYO breakers are <strong>not</strong> forwarded to the box channel:</p>
+    <pre><code>b, _ := circuit.<span class="fn">NewBreaker</span>(circuit.<span class="fn">WithName</span>(<span class="st">"custom"</span>))
+err := box.<span class="fn">AddBYO</span>(b)</code></pre>
+  </section>
+
+  <!-- Panic Handling -->
+  <section id="panic-handling">
+    <h2>Panic Handling</h2>
+    <p>If the function passed to <code>Run</code> panics, the panic is recorded as a failure (incrementing the error count), then re-raised so the caller's recovery logic can handle it:</p>
+    <pre><code><span class="kw">defer func</span>() {
+    <span class="kw">if</span> r := <span class="fn">recover</span>(); r != <span class="kw">nil</span> {
+        log.<span class="fn">Printf</span>(<span class="st">"caught panic: %v"</span>, r)
+    }
+}()
+
+circuit.<span class="fn">Run</span>(b, ctx, <span class="kw">func</span>(ctx context.Context) (<span class="ty">string</span>, <span class="ty">error</span>) {
+    <span class="fn">panic</span>(<span class="st">"something went wrong"</span>)
+})</code></pre>
+  </section>
+
+  <!-- API Reference -->
+  <section id="api-reference">
+    <h2>API Reference</h2>
+
+    <h3>Constructors</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>NewBreaker(opts ...Option) (*Breaker, error)</h4>
+        <p>Creates a new circuit breaker. All breakers must be created with this function. Auto-generates a name from the caller's file/line if none is provided.</p>
+      </div>
+      <div class="api-card">
+        <h4>NewBreakerBox() *BreakerBox</h4>
+        <p>Creates a breaker manager with a shared state change channel for all breakers created via <code>Create()</code>.</p>
+      </div>
+    </div>
+
+    <h3>Execution</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>Run[T](b, ctx, fn) (T, error)</h4>
+        <p>Generic, type-safe execution. Applies timeout via <code>context.WithTimeout</code>, catches panics, converts <code>context.DeadlineExceeded</code> to <code>ErrTimeout</code>.</p>
+      </div>
+      <div class="api-card">
+        <h4>b.Allow(ctx) (func(error), error)</h4>
+        <p>Two-step mode. Returns a <code>done</code> callback for reporting outcomes. No timeout applied.</p>
+      </div>
+    </div>
+
+    <h3>Breaker Methods</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>b.Name() string</h4>
+        <p>Returns the breaker's name.</p>
+      </div>
+      <div class="api-card">
+        <h4>b.State() State</h4>
+        <p>Returns the current state. Triggers lazy evaluation of state transitions.</p>
+      </div>
+      <div class="api-card">
+        <h4>b.Size() int</h4>
+        <p>Returns the number of errors in the current sliding window.</p>
+      </div>
+      <div class="api-card">
+        <h4>b.Snapshot() BreakerState</h4>
+        <p>Returns a JSON-serializable point-in-time snapshot with timing information.</p>
+      </div>
+      <div class="api-card">
+        <h4>b.StateChange() &lt;-chan BreakerState</h4>
+        <p>Returns a read-only channel (buffered, 16 elements) that receives state change events.</p>
+      </div>
+    </div>
+
+    <h3>BreakerBox Methods</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>box.Create(opts) (*Breaker, error)</h4>
+        <p>Creates a breaker whose state changes are forwarded to the box channel.</p>
+      </div>
+      <div class="api-card">
+        <h4>box.Load(name) *Breaker</h4>
+        <p>Fetches a breaker by name. Returns <code>nil</code> if not found.</p>
+      </div>
+      <div class="api-card">
+        <h4>box.LoadOrCreate(name, opts) (*Breaker, error)</h4>
+        <p>Thread-safe load-or-create. Only one breaker is created per name.</p>
+      </div>
+      <div class="api-card">
+        <h4>box.AddBYO(b) error</h4>
+        <p>Adds an externally-created breaker. State changes are <strong>not</strong> forwarded.</p>
+      </div>
+    </div>
+
+    <h3>State Constants</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>Closed, Throttled, Open</h4>
+        <p><code>State</code> type (<code>uint32</code>) with <code>String()</code>, <code>MarshalJSON()</code>, and <code>UnmarshalJSON()</code> methods.</p>
+      </div>
+    </div>
+
+    <h3>Default Constants</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>DefaultTimeout = 10s</h4>
+        <p>Default context timeout applied by <code>Run</code>.</p>
+      </div>
+      <div class="api-card">
+        <h4>DefaultBackOff = 1m</h4>
+        <p>Default throttled recovery duration.</p>
+      </div>
+      <div class="api-card">
+        <h4>DefaultWindow = 5m</h4>
+        <p>Default sliding window for error counting.</p>
+      </div>
+    </div>
+
+    <h3>Estimation Functions</h3>
+    <div class="api-grid">
+      <div class="api-card">
+        <h4>Linear, Logarithmic, Exponential, EaseInOut, JitteredLinear</h4>
+        <p>Built-in <code>EstimationFunc</code> implementations. Takes tick <code>[1-100]</code>, returns blocking probability <code>[0-100]</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Config Reference -->
+  <section id="config">
+    <h2>Configuration Reference</h2>
+    <table>
+      <thead>
+        <tr><th>Option</th><th>Default</th><th>Minimum</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>WithName(s)</code></td><td>auto-generated</td><td>&mdash;</td><td>Breaker identifier</td></tr>
+        <tr><td><code>WithTimeout(d)</code></td><td>10s</td><td>&mdash;</td><td>Context timeout applied to <code>Run</code></td></tr>
+        <tr><td><code>WithThreshold(n)</code></td><td>0 (opens on first error)</td><td>&mdash;</td><td>Max errors in window before opening</td></tr>
+        <tr><td><code>WithWindow(d)</code></td><td>5m</td><td>10ms</td><td>Sliding window for error counting</td></tr>
+        <tr><td><code>WithBackOff(d)</code></td><td>1m</td><td>10ms</td><td>Duration of throttled recovery</td></tr>
+        <tr><td><code>WithLockOut(d)</code></td><td>0 (no lockout)</td><td>&mdash;</td><td>Forced-open duration before throttling</td></tr>
+        <tr><td><code>WithEstimationFunc(f)</code></td><td>Linear</td><td>&mdash;</td><td>Throttle probability curve</td></tr>
+        <tr><td><code>WithOpeningResetsErrors(v)</code></td><td>false</td><td>&mdash;</td><td>Clear error count when opening</td></tr>
+        <tr><td><code>WithIsSuccessful(fn)</code></td><td>nil</td><td>&mdash;</td><td>Classify errors as successes</td></tr>
+        <tr><td><code>WithIsExcluded(fn)</code></td><td>nil</td><td>&mdash;</td><td>Exclude errors from tracking</td></tr>
+        <tr><td><code>WithMetrics(m)</code></td><td>nil</td><td>&mdash;</td><td>Metrics collector implementation</td></tr>
+        <tr><td><code>WithOnStateChange(fn)</code></td><td>nil</td><td>&mdash;</td><td>State transition callback (runs after mutex release)</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+
+<footer>
+  <p>
+    <a href="https://github.com/schigh/circuit">GitHub</a> &middot;
+    <a href="https://pkg.go.dev/github.com/schigh/circuit">pkg.go.dev</a> &middot;
+    MIT License
+  </p>
+</footer>
+
+</body>
+</html>
