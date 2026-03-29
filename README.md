@@ -7,7 +7,7 @@
 </p>
 
 [![CI](https://github.com/schigh/circuit/actions/workflows/ci.yml/badge.svg)](https://github.com/schigh/circuit/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/schigh/circuit/branch/master/graph/badge.svg)](https://codecov.io/gh/schigh/circuit)
+[![codecov](https://codecov.io/gh/schigh/circuit/branch/main/graph/badge.svg)](https://codecov.io/gh/schigh/circuit)
 [![Go Report Card](https://goreportcard.com/badge/github.com/schigh/circuit)](https://goreportcard.com/report/github.com/schigh/circuit)
 [![Go Reference](https://pkg.go.dev/badge/github.com/schigh/circuit.svg)](https://pkg.go.dev/github.com/schigh/circuit)
 
