@@ -44,9 +44,9 @@ type Breaker struct {
 	window  time.Duration // Window of time to look for errors (e.g. 5 errors in 10 mins)
 
 	// misc
-	stateMX  sync.Mutex      // Protects state transitions in evaluateState/changeStateTo
-	tracker  *errTracker     // Error tracker
-	estimate EstimationFunc  // Function used to estimate throttling chance
+	stateMX  sync.Mutex       // Protects state transitions in evaluateState/changeStateTo
+	tracker  *errTracker      // Error tracker
+	estimate EstimationFunc   // Function used to estimate throttling chance
 	metrics  MetricsCollector // Optional metrics collector
 
 	// orchestration

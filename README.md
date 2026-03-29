@@ -6,6 +6,11 @@
   A highly-tunable circuit breaker for Go.
 </p>
 
+[![CI](https://github.com/schigh/circuit/actions/workflows/ci.yml/badge.svg)](https://github.com/schigh/circuit/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/schigh/circuit/branch/master/graph/badge.svg)](https://codecov.io/gh/schigh/circuit)
+[![Go Report Card](https://goreportcard.com/badge/github.com/schigh/circuit)](https://goreportcard.com/report/github.com/schigh/circuit)
+[![Go Reference](https://pkg.go.dev/badge/github.com/schigh/circuit.svg)](https://pkg.go.dev/github.com/schigh/circuit)
+
 Circuit implements the [circuit breaker](https://www.martinfowler.com/bliki/CircuitBreaker.html) design pattern with gradual recovery via probabilistic throttling, type-safe generics, and zero background goroutines.
 
 ## Installation
