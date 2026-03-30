@@ -61,6 +61,25 @@ func TestBreakerBox(t *testing.T) {
 		})
 	})
 
+	t.Run("Create with empty name after NewBreaker", func(t *testing.T) {
+		t.Parallel()
+		bb := NewBreakerBox()
+		// NewBreaker auto-generates a name from caller, but we can force
+		// an empty name by using WithName("") which sets name to ""
+		// NewBreaker will then generate a name, so Create won't hit
+		// the empty-name path. We need to verify the auto-name path works.
+		// Actually the b.name=="" check on line 53 can never be hit since
+		// NewBreaker always generates a name. This is a dead code path.
+		// Let's just test that Create returns properly for unnamed.
+		b, err := bb.Create()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if b.name == "" {
+			t.Fatal("expected auto-generated name")
+		}
+	})
+
 	t.Run("Load", func(t *testing.T) {
 		t.Parallel()
 
@@ -115,6 +134,32 @@ func TestBreakerBox(t *testing.T) {
 				t.Fatal("expected original threshold to be preserved")
 			}
 		})
+	})
+
+	t.Run("LoadOrCreate concurrent", func(t *testing.T) {
+		t.Parallel()
+		bb := NewBreakerBox()
+		errs := make(chan error, 10)
+		breakers := make(chan *Breaker, 10)
+		for range 10 {
+			go func() {
+				b, err := bb.LoadOrCreate("race", WithThreshold(5))
+				errs <- err
+				breakers <- b
+			}()
+		}
+		var first *Breaker
+		for range 10 {
+			if err := <-errs; err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			b := <-breakers
+			if first == nil {
+				first = b
+			} else if b != first {
+				t.Fatal("expected all goroutines to get the same breaker instance")
+			}
+		}
 	})
 
 	t.Run("AddBYO", func(t *testing.T) {
